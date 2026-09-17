@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+scikit-learn
+nltk
+Sastrawi
+numpy
+pydantic
+pytest
+httpx
+sympy
+gunicorn
