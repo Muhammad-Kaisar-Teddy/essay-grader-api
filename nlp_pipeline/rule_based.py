@@ -33,8 +33,8 @@ def calculate_rule_based_score(
     matched_weight = 0.0
 
     for kw_item in keywords:
-        # Pisahkan keyword berdasarkan '/' untuk menangani sinonim/alias
-        variants = [k.strip() for k in kw_item.keyword.split('/') if k.strip()]
+        # Pisahkan keyword berdasarkan '/' atau ';' untuk menangani sinonim/alias
+        variants = [k.strip() for k in re.split(r'[/;]', kw_item.keyword) if k.strip()]
         
         variant_matched = False
         matched_variant_text = ""
