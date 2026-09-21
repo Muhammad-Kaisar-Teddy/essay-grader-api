@@ -7,3 +7,7 @@ results.csv
 sample_test_set.csv
 .env
 .DS_Store
+evaluate_model.py
+evaluation_detailed_results.csv
+evaluation_detailed_results.xlsx
+evaluation_summary.txt
