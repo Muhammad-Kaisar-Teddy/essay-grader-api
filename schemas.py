@@ -23,6 +23,7 @@ class EssayRequest(BaseModel):
     rule_weight: float = Field(0.5, ge=0.0, le=1.0, description="Bobot Rule-Based (0.0 - 1.0), ditentukan guru")
     lsa_weight: float = Field(0.5, ge=0.0, le=1.0, description="Bobot LSA (0.0 - 1.0), ditentukan guru")
     math_weight: float = Field(0.0, ge=0.0, le=1.0, description="Bobot Evaluasi Matematis (0.0 - 1.0)")
+    tgate: float = Field(0.0, ge=0.0, le=100.0, description="Threshold Gate (0-100) untuk minimal skor faktual. LSA hanya akan dihitung jika skor faktual >= tgate.")
     max_score: float = Field(100.0, ge=0.0, description="Skor maksimal/poin penuh untuk butir soal ini (default 100.0)")
 
 class GraderResponse(BaseModel):
