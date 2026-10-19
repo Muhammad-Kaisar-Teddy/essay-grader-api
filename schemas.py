@@ -1,6 +1,6 @@
 # pyrefly: ignore [missing-import]
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 
 class KeywordItem(BaseModel):
     keyword: str = Field(..., description="Kata kunci")
@@ -19,6 +19,11 @@ class EssayRequest(BaseModel):
         description="Daftar kunci jawaban dari guru (bisa lebih dari satu, misal versi Bahasa Indonesia dan versi Bahasa Inggris)"
     )
     keywords: List[KeywordItem] = Field(default_factory=list, description="Daftar kata kunci beserta bobot dinamisnya")
+    required_keywords_count: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Jumlah target minimal kata kunci yang harus disebutkan siswa untuk mencapai nilai 100% pada rule-based. Jika None, seluruh kata kunci harus ada."
+    )
     math_steps: List[MathStepItem] = Field(default_factory=list, description="Daftar ekspektasi langkah persamaan matematis")
     rule_weight: float = Field(0.5, ge=0.0, le=1.0, description="Bobot Rule-Based (0.0 - 1.0), ditentukan guru")
     lsa_weight: float = Field(0.5, ge=0.0, le=1.0, description="Bobot LSA (0.0 - 1.0), ditentukan guru")

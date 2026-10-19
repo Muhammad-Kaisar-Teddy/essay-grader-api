@@ -1,11 +1,13 @@
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import re
 from nlp_pipeline.preprocessing import preprocess_text
 from schemas import KeywordItem
 
 
 def calculate_rule_based_score(
-    student_answer_raw: str, keywords: List[KeywordItem]
+    student_answer_raw: str,
+    keywords: List[KeywordItem],
+    required_keywords_count: Optional[int] = None
 ) -> Tuple[float, List[str]]:
     """
     Menghitung skor rule-based berdasarkan kemunculan keyword dengan bobot dinamis.
@@ -15,6 +17,10 @@ def calculate_rule_based_score(
 
     Mendukung 'strict' mode: jika True, dicocokkan dengan teks raw (case-sensitive
     dan memperhatikan tanda baca). Jika False, menggunakan teks preprocessed.
+
+    Jika 'required_keywords_count' diisi (misal: soal meminta minimal 5 dari 8 opsi):
+    Sistem akan membagi matched_weight terhadap total bobot K kata kunci teratas,
+    sehingga siswa yang berhasil memenuhi target minimal akan memperoleh nilai 100%.
 
     Mengembalikan:
         - skor (0-100)
@@ -65,5 +71,18 @@ def calculate_rule_based_score(
             matched.append(f"{kw_item.keyword} (matched: {matched_variant_text})")
             matched_weight += kw_item.weight
 
-    score = (matched_weight / total_weight) * 100
+    # Hitung skor rule-based
+    if required_keywords_count and required_keywords_count > 0:
+        # Mengambil akumulasi bobot dari K kata kunci teratas sebagai target pembagi
+        k = min(required_keywords_count, len(keywords))
+        sorted_weights = sorted([kw.weight for kw in keywords], reverse=True)
+        target_weight = sum(sorted_weights[:k])
+        
+        if target_weight > 0:
+            score = min(100.0, (matched_weight / target_weight) * 100.0)
+        else:
+            score = 0.0
+    else:
+        score = (matched_weight / total_weight) * 100.0
+
     return score, matched

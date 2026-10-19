@@ -13,7 +13,11 @@ def grade_essay(request: EssayRequest) -> GraderResponse:
     4. Fusion: skor akhir = (rule_weight * rule_score) + (lsa_weight * lsa_score) + (math_weight * math_score)
     """
     # 1. Rule-based dengan bobot dinamis
-    rule_score, matched = calculate_rule_based_score(request.student_answer, request.keywords)
+    rule_score, matched = calculate_rule_based_score(
+        request.student_answer,
+        request.keywords,
+        request.required_keywords_count
+    )
     
     # 2. Evaluasi Matematis (jika ada math_steps)
     math_score = 0.0

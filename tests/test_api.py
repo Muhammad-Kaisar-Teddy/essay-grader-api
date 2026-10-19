@@ -237,3 +237,46 @@ def test_math_evaluation_sympy():
     p3 = {**payload, "student_answer": "Q = 5000 - 0.5P"}
     r3 = client.post("/grade", json=p3).json()
     assert r3["math_score"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Required Keywords Count (Target Match Capping)
+# ---------------------------------------------------------------------------
+def test_required_keywords_count():
+    # Ada 8 opsi kata kunci, tapi soal hanya meminta minimal 3 kata kunci untuk nilai 100%
+    payload = {
+        "student_answer": "Siswa menyebutkan apel, jeruk, dan mangga saja.",
+        "reference_answers": ["Siswa menyebutkan buah-buahan lokal seperti apel, jeruk, mangga, pisang, pepaya, nanas, melon, semangka."],
+        "keywords": [
+            {"keyword": "apel", "weight": 1.0},
+            {"keyword": "jeruk", "weight": 1.0},
+            {"keyword": "mangga", "weight": 1.0},
+            {"keyword": "pisang", "weight": 1.0},
+            {"keyword": "pepaya", "weight": 1.0},
+            {"keyword": "nanas", "weight": 1.0},
+            {"keyword": "melon", "weight": 1.0},
+            {"keyword": "semangka", "weight": 1.0},
+        ],
+        "required_keywords_count": 3,
+        "rule_weight": 1.0,
+        "lsa_weight": 0.0,
+        "tgate": 0.0
+    }
+
+    # 1. Siswa menjawab 3 dari 8 kata kunci -> berhak dapat nilai 100%
+    r1 = client.post("/grade", json=payload).json()
+    assert r1["rule_based_score"] == 100.0
+    assert len(r1["matched_keywords"]) == 3
+
+    # 2. Siswa menjawab 4 dari 8 kata kunci -> tetap 100% (capping)
+    p2 = {**payload, "student_answer": "Siswa menyebutkan apel, jeruk, mangga, dan pisang."}
+    r2 = client.post("/grade", json=p2).json()
+    assert r2["rule_based_score"] == 100.0
+    assert len(r2["matched_keywords"]) == 4
+
+    # 3. Siswa hanya menjawab 2 dari target 3 -> skor = (2/3) * 100 = 66.67
+    p3 = {**payload, "student_answer": "Hanya ada apel dan jeruk di sini."}
+    r3 = client.post("/grade", json=p3).json()
+    assert r3["rule_based_score"] == pytest.approx(66.67, abs=0.1)
+    assert len(r3["matched_keywords"]) == 2
+
