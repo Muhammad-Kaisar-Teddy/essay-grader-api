@@ -1,6 +1,7 @@
 from nlp_pipeline.rule_based import calculate_rule_based_score
 from nlp_pipeline.lsa_model import calculate_lsa_score
 from nlp_pipeline.math_evaluator import calculate_math_score
+from nlp_pipeline.preprocessing import clean_html_and_newlines
 from schemas import EssayRequest, GraderResponse
 
 
@@ -12,17 +13,30 @@ def grade_essay(request: EssayRequest) -> GraderResponse:
     3. Evaluasi Matematis SymPy (mengecek ekuivalensi langkah hitungan)
     4. Fusion: skor akhir = (rule_weight * rule_score) + (lsa_weight * lsa_score) + (math_weight * math_score)
     """
-    # 1. Rule-based dengan bobot dinamis
+    # Ekstraksi feature flags konfigurasi preprocessing
+    flags = request.get_preprocessing_flags()
+
+
+    # 0. Normalisasi HTML dan jeda baris (Enter / Shift + Enter jika clean_html aktif)
+    if flags.clean_html:
+        clean_student_answer = clean_html_and_newlines(request.student_answer)
+        clean_reference_answers = [clean_html_and_newlines(ref) for ref in request.reference_answers]
+    else:
+        clean_student_answer = request.student_answer
+        clean_reference_answers = request.reference_answers
+
+    # 1. Rule-based dengan bobot dinamis dan feature flags
     rule_score, matched = calculate_rule_based_score(
-        request.student_answer,
+        clean_student_answer,
         request.keywords,
-        request.required_keywords_count
+        request.required_keywords_count,
+        flags=flags
     )
     
     # 2. Evaluasi Matematis (jika ada math_steps)
     math_score = 0.0
     if request.math_steps:
-        math_score = calculate_math_score(request.student_answer, request.math_steps)
+        math_score = calculate_math_score(clean_student_answer, request.math_steps)
 
     # 3. Hitung Skor Faktual (Srb) gabungan dari Keyword dan Math
     factual_weight = request.rule_weight + request.math_weight
@@ -34,8 +48,13 @@ def grade_essay(request: EssayRequest) -> GraderResponse:
     # 4. Hybrid Fusion dengan Tgate dan Penalti (LSA baru dipanggil jika lolos Tgate)
     lsa_score = 0.0
     if factual_score >= request.tgate or request.tgate == 0:
-        # Lulus Tgate: LSA AKTIF (Hitung sekarang)
-        lsa_score = calculate_lsa_score(request.student_answer, request.reference_answers)
+        # Lulus Tgate: LSA AKTIF (Hitung sekarang dengan flags)
+        lsa_score = calculate_lsa_score(
+            clean_student_answer,
+            clean_reference_answers,
+            flags=flags
+        )
+
         
         # Agregasi berbobot penuh (S_final = α × Srb + β × Slsa)
         final_score = (rule_score * request.rule_weight) + (lsa_score * request.lsa_weight) + (math_score * request.math_weight)

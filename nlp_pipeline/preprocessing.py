@@ -1,9 +1,29 @@
+import html
 import re
 import string
+import warnings
+from functools import lru_cache
+from typing import List, Tuple, Optional, Any
+
+
+# Suppress unpickling / sklearn version warnings from legacy model bundles
+warnings.filterwarnings("ignore", message=".*HF Hub.*")
+try:
+    from sklearn.exceptions import InconsistentVersionWarning
+    warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
+except ImportError:
+    pass
+
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 import nltk
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
+from num2words import num2words
+
+# Import bilingual NLP models: nlp-id (Indonesian) & spaCy (English)
+from nlp_id.lemmatizer import Lemmatizer as IdLemmatizer
+from nlp_id.postag import PosTag as IdPosTag
+import spacy
 
 # ---------------------------------------------------------------------------
 # Kata-kata negasi: TIDAK boleh dihapus dari stopword removal
@@ -25,6 +45,8 @@ for _resource, _pkg in [
     ('corpora/stopwords', 'stopwords'),
     ('corpora/wordnet', 'wordnet'),
     ('corpora/omw-1.4', 'omw-1.4'),
+    ('tokenizers/punkt', 'punkt'),
+    ('tokenizers/punkt_tab', 'punkt_tab'),
 ]:
     try:
         nltk.data.find(_resource)
@@ -32,60 +54,486 @@ for _resource, _pkg in [
         nltk.download(_pkg, quiet=True)
 
 # ---------------------------------------------------------------------------
-# Inisialisasi tools NLP
+# Inisialisasi tools NLP Bilingual
 # ---------------------------------------------------------------------------
 _factory = StemmerFactory()
 _sastrawi = _factory.create_stemmer()
-_lemmatizer = WordNetLemmatizer()
+_wordnet_lemmatizer = WordNetLemmatizer()
+
+# Lemmatizer dan POS Tagger Bahasa Indonesia (nlp-id, berbasis kamus resmi KBBI)
+_id_lemmatizer = IdLemmatizer()
+_id_postagger = IdPosTag()
+
+# Model Bahasa Inggris spaCy (lemmatizer + POS tagger)
+_en_nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+
+# ---------------------------------------------------------------------------
+# Kata-kata bilangan: TIDAK boleh dihapus dari stopword removal
+# Dipertahankan agar data numerik esai (misal: "5 sila", "3 pilar") tidak lenyap
+# ---------------------------------------------------------------------------
+NUMBER_WORDS = {
+    # Bahasa Indonesia
+    'nol', 'satu', 'dua', 'tiga', 'empat', 'lima', 'enam', 'tujuh', 'delapan', 'sembilan', 'sepuluh',
+    'sebelas', 'belas', 'puluh', 'ratus', 'ribu', 'juta',
+    # Bahasa Inggris
+    'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+    'eleven', 'twelve', 'hundred', 'thousand', 'million'
+}
 
 # Stopwords gabungan Bahasa Indonesia + Bahasa Inggris,
-# dengan pengecualian untuk kata negasi
-_id_stops = set(stopwords.words('indonesian')) - NEGATION_WORDS
-_en_stops = set(stopwords.words('english')) - NEGATION_WORDS
+# dengan pengecualian untuk kata negasi dan kata bilangan
+_id_stops = (set(stopwords.words('indonesian')) - NEGATION_WORDS) - NUMBER_WORDS
+_en_stops = (set(stopwords.words('english')) - NEGATION_WORDS) - NUMBER_WORDS
 STOP_WORDS = _id_stops | _en_stops
+
+
+@lru_cache(maxsize=10000)
+def _lemmatize_id_word(word: str) -> str:
+    """Lemmatisasi kata tunggal bahasa Indonesia menggunakan nlp-id."""
+    try:
+        return _id_lemmatizer.lemmatize(word)
+    except Exception:
+        return word
+
+
+@lru_cache(maxsize=10000)
+def _lemmatize_en_word(word: str) -> str:
+    """Lemmatisasi kata tunggal bahasa Inggris menggunakan spaCy."""
+    try:
+        doc = _en_nlp(word)
+        return doc[0].lemma_.lower() if doc else word
+    except Exception:
+        return word
 
 
 def _normalize_word(word: str) -> str:
     """
-    Menormalisasi satu kata menggunakan Sastrawi (ID) dan NLTK lemmatizer (EN).
-    Pilih hasil yang lebih pendek sebagai bentuk dasar yang lebih tereduksi.
-    Kata negasi dikembalikan apa adanya.
+    Menormalisasi satu kata menggunakan Lemmatizer Bilingual:
+    1. Negasi, kata bilangan, dan digit dikembalikan apa adanya.
+    2. Coba Lemmatizer Bahasa Indonesia (nlp-id).
+    3. Coba Lemmatizer Bahasa Inggris (spaCy en_core_web_sm).
+    4. Fallback ke Sastrawi jika masih memiliki imbuhan kompleks yang dapat dipangkas.
     """
-    if word in NEGATION_WORDS:
+    if word in NEGATION_WORDS or word in NUMBER_WORDS or word.isdigit():
         return word
+
+    # 1. Lemmatizer Bahasa Indonesia (nlp-id)
+    id_lemma = _lemmatize_id_word(word)
+    if id_lemma != word:
+        return id_lemma
+
+    # 2. Lemmatizer Bahasa Inggris (spaCy)
+    en_lemma = _lemmatize_en_word(word)
+    if en_lemma != word:
+        return en_lemma
+
+    # 3. Fallback: jika Sastrawi menghasilkan bentuk yang lebih pendek
     stemmed = _sastrawi.stem(word)
-    lemmatized = _lemmatizer.lemmatize(word)
-    return stemmed if len(stemmed) <= len(lemmatized) else lemmatized
+    if len(stemmed) < len(word):
+        return stemmed
+
+    return word
 
 
-def preprocess_text(text: str) -> str:
+def clean_html_and_newlines(text: str) -> str:
     """
-    Membersihkan dan memproses teks bilingual (Bahasa Indonesia + Bahasa Inggris).
+    Membersihkan tag HTML dan menormalisasi jeda baris (Enter / Shift + Enter).
 
-    Tahapan:
-    1. Case folding (lowercase)
-    2. Hapus tanda baca & angka
-    3. Tokenisasi
-    4. Stopword removal (negasi dipertahankan)
-    5. Stemming (Sastrawi) + Lemmatization (NLTK WordNet) — pilih yang lebih pendek
+    1. Mengubah tag pemisah baris/blok HTML (<br>, <p>, <div>, <li>, dll.) menjadi newline '\\n'.
+       - Shift + Enter di web editor menghasilkan <br> atau <br/>.
+       - Enter di web editor menghasilkan blok baru seperti <p>...</p> atau <div>...</div>.
+    2. Menangani karakter newline mentah (\\r\\n, \\r, unicode line/paragraph separator \\u2028, \\u2029).
+    3. Menghapus komentar HTML dan tag HTML lainnya (misal: <b>, <i>, <span>).
+    4. Decode HTML entities (misal: &nbsp; menjadi spasi, &lt; menjadi <, &gt; menjadi >, dsb.).
+    5. Merapikan spasi dan baris kosong berlebih.
     """
     if not text:
         return ""
 
-    # 1. Lowercase
-    text = text.lower()
+    # 1. Normalisasi newline sistem dan unicode line/paragraph separator
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    text = text.replace('\u2028', '\n').replace('\u2029', '\n')
 
-    # 2. Hapus tanda baca & angka
-    text = re.sub(r'\d+', '', text)
-    text = text.translate(str.maketrans('', '', string.punctuation))
+    # 2. Shift + Enter: <br>, <br/>, <br /> -> \n
+    text = re.sub(r'(?i)<br\s*/?>', '\n', text)
 
-    # 3. Tokenisasi & 4. Stopword removal (pertahankan negasi)
-    tokens = [
-        word for word in text.split()
-        if word in NEGATION_WORDS or word not in STOP_WORDS
-    ]
+    # 3. Enter (blok paragraf/div/list/heading/table row) -> \n
+    text = re.sub(r'(?i)</(p|div|li|tr|h[1-6]|blockquote)>', '\n', text)
+    text = re.sub(r'(?i)<(p|div|li|tr|h[1-6]|blockquote)[^>]*>', '', text)
 
-    # 5. Normalisasi (stem/lemmatize)
-    processed = [_normalize_word(token) for token in tokens]
+    # 4. Hapus komentar HTML dan tag HTML lainnya (misal: <b>, <i>, <span>, <td>, dll)
+    text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+    text = re.sub(r'</?[a-zA-Z][a-zA-Z0-9]*\b[^>]*\/?>', '', text)
 
-    return " ".join(processed)
+    # 5. Decode HTML entities (&nbsp; -> space, &lt; -> <, &gt; -> >, dll)
+    text = html.unescape(text)
+    text = text.replace('\xa0', ' ')
+
+    # 6. Bersihkan spasi horizontal berlebih di tiap baris dan rapikan \n
+    lines = [re.sub(r'[ \t]+', ' ', line).strip() for line in text.split('\n')]
+    
+    cleaned_lines = []
+    prev_empty = False
+    for line in lines:
+        if line == '':
+            if not prev_empty:
+                cleaned_lines.append('')
+                prev_empty = True
+        else:
+            cleaned_lines.append(line)
+            prev_empty = False
+
+    return '\n'.join(cleaned_lines).strip()
+
+
+# ---------------------------------------------------------------------------
+# Kamus Kontraksi Bahasa Inggris (Contraction Expansion)
+# ---------------------------------------------------------------------------
+CONTRACTIONS = {
+    # Bentuk Negasi
+    "can't": "can not",
+    "cannot": "cannot",
+    "cant": "can not",
+    "won't": "will not",
+    "wont": "will not",
+    "shan't": "shall not",
+    "shant": "shall not",
+    "don't": "do not",
+    "dont": "do not",
+    "doesn't": "does not",
+    "doesnt": "does not",
+    "didn't": "did not",
+    "didnt": "did not",
+    "isn't": "is not",
+    "isnt": "is not",
+    "aren't": "are not",
+    "arent": "are not",
+    "wasn't": "was not",
+    "wasnt": "was not",
+    "weren't": "were not",
+    "werent": "were not",
+    "haven't": "have not",
+    "havent": "have not",
+    "hasn't": "has not",
+    "hasnt": "has not",
+    "hadn't": "had not",
+    "hadnt": "had not",
+    "wouldn't": "would not",
+    "wouldnt": "would not",
+    "shouldn't": "should not",
+    "shouldnt": "should not",
+    "couldn't": "could not",
+    "couldnt": "could not",
+    "mustn't": "must not",
+    "mustnt": "must not",
+    "ain't": "am not",
+    "aint": "am not",
+
+    # Pronoun / Noun + be / have / will / would
+    "i'm": "i am",
+    "you're": "you are",
+    "he's": "he is",
+    "she's": "she is",
+    "it's": "it is",
+    "we're": "we are",
+    "they're": "they are",
+    "that's": "that is",
+    "there's": "there is",
+    "here's": "here is",
+    "what's": "what is",
+    "who's": "who is",
+    "where's": "where is",
+    "when's": "when is",
+    "why's": "why is",
+    "how's": "how is",
+
+    "i've": "i have",
+    "you've": "you have",
+    "we've": "we have",
+    "they've": "they have",
+    "could've": "could have",
+    "should've": "should have",
+    "would've": "would have",
+    "might've": "might have",
+    "must've": "must have",
+
+    "i'll": "i will",
+    "you'll": "you will",
+    "he'll": "he will",
+    "she'll": "she will",
+    "we'll": "we will",
+    "they'll": "they will",
+    "it'll": "it will",
+    "that'll": "that will",
+
+    "i'd": "i would",
+    "you'd": "you would",
+    "he'd": "he would",
+    "she'd": "she would",
+    "we'd": "we would",
+    "they'd": "they would",
+
+    "let's": "let us",
+}
+
+_SORTED_CONTRACTIONS = sorted(CONTRACTIONS.keys(), key=len, reverse=True)
+_CONTRACTIONS_RE = re.compile(
+    r'\b(' + '|'.join(re.escape(k) for k in _SORTED_CONTRACTIONS) + r')\b',
+    flags=re.IGNORECASE
+)
+
+
+def expand_contractions(text: str) -> str:
+    """
+    Mengembangkan singkatan (contractions) bahasa Inggris ke bentuk panjangnya.
+    Contoh: "don't" -> "do not", "it's" -> "it is", "they're" -> "they are".
+    Juga menormalisasi berbagai varian kutip tunggal/curly apostrophes (’ ‘ ´ `).
+    """
+    if not text:
+        return ""
+    # Normalisasi berbagai jenis karakter apostrof
+    text = re.sub(r"[’‘´`]", "'", text)
+    return _CONTRACTIONS_RE.sub(
+        lambda m: CONTRACTIONS.get(m.group(0).lower(), m.group(0)),
+        text
+    )
+
+
+_expand_contractions = expand_contractions
+
+
+
+# ---------------------------------------------------------------------------
+# Deteksi Bahasa Sederhana & Konversi Angka ke Kata Selektif (Num2Words)
+# ---------------------------------------------------------------------------
+_ID_INDICATORS = {
+    'dan', 'yang', 'di', 'dari', 'ini', 'itu', 'adalah', 'untuk', 'dengan',
+    'pada', 'oleh', 'ke', 'karena', 'bisa', 'dapat', 'akan', 'atau', 'telah'
+}
+_EN_INDICATORS = {
+    'the', 'and', 'is', 'are', 'in', 'of', 'to', 'for', 'with', 'on', 'by',
+    'this', 'that', 'from', 'as', 'at', 'an', 'be', 'has', 'have', 'can'
+}
+
+
+def detect_language(text: str) -> str:
+    """
+    Deteksi bahasa dominan teks: 'id' (Bahasa Indonesia) atau 'en' (Bahasa Inggris).
+    1. Mencocokkan fungsi kata (stopword/function words) utama kedua bahasa.
+    2. Jika seimbang / tanpa kata fungsi (misal esai singkat teknis), gunakan perbandingan
+       kosakata bahasa Inggris (WordNet) vs bahasa Indonesia (kamus morfologi nlp-id).
+    """
+    words = re.findall(r'\b[a-zA-Z]+\b', text.lower())
+    if not words:
+        return 'id'
+
+    unique_words = set(words)
+    en_matches = len(unique_words & _EN_INDICATORS)
+    id_matches = len(unique_words & _ID_INDICATORS)
+
+    if en_matches > id_matches:
+        return 'en'
+    elif id_matches > en_matches:
+        return 'id'
+
+    # Fallback jika skor indikator seimbang: cek leksikon WordNet (EN) vs nlp-id (ID)
+    from nltk.corpus import wordnet
+    id_count = sum(1 for w in unique_words if w in _id_lemmatizer.lemma_dict or w in _id_lemmatizer.root_word)
+    en_count = sum(1 for w in unique_words if wordnet.synsets(w))
+
+    return 'en' if en_count > id_count else 'id'
+
+
+
+def convert_numbers_to_words(text: str, max_val: int = 100) -> str:
+    """
+    Mengonversi bilangan bulat (0 s.d max_val, default 100) menjadi kata secara selektif.
+    - Mendukung bilingual (Bahasa Indonesia & Bahasa Inggris secara otomatis).
+    - Selektif: mengabaikan baris yang mengandung persamaan matematika ('='),
+      mengabaikan angka desimal (misal: 0.5, 3.14), variabel aljabar (misal: 2x, P1),
+      dan angka tahun/angka besar di atas max_val (misal: 1945, 2024).
+    """
+    if not text:
+        return ""
+
+    lang = detect_language(text)
+
+    lines = text.split('\n')
+    converted_lines = []
+
+    for line in lines:
+        # Jika baris adalah persamaan matematika, pertahankan angka untuk SymPy / perhitungan eksak
+        if '=' in line:
+            converted_lines.append(line)
+            continue
+
+        def _num_repl(match):
+            val_str = match.group(1)
+            try:
+                val = int(val_str)
+                if 0 <= val <= max_val:
+                    return num2words(val, lang=lang)
+            except Exception:
+                pass
+            return val_str
+
+        # Hanya ganti bilangan bulat tersendiri (bukan desimal, bukan variabel aljabar)
+        converted_line = re.sub(r'(?<![\.\,\w])(\d+)(?![\.\,\w])', _num_repl, line)
+        converted_lines.append(converted_line)
+
+    return '\n'.join(converted_lines)
+
+
+def preprocess_text(
+    text: str,
+    clean_html: bool = True,
+    case_folding: bool = True,
+    expand_contractions: bool = True,
+    convert_numbers: bool = True,
+    remove_punctuation: bool = True,
+    preserve_years: bool = True,
+    remove_stopwords: bool = True,
+    use_lemmatization: bool = True,
+    flags: Optional[Any] = None
+) -> str:
+    """
+    Membersihkan dan memproses teks bilingual dengan Feature Flags fleksibel.
+
+    Mendukung konfigurasi On/Off untuk masing-masing tahap preprocessing (Ablation Study):
+    - clean_html: Pembersihan tag HTML & normalisasi jeda baris
+    - case_folding: Normalisasi huruf kecil (lowercase)
+    - expand_contractions: Ekspansi singkatan bahasa Inggris (don't -> do not)
+    - convert_numbers: Konversi bilangan 0-100 ke kata (num2words)
+    - remove_punctuation: Penghapusan tanda baca
+    - preserve_years: Preservasi angka tahun 4-digit rentang 1000 - 2099
+    - remove_stopwords: Pembersihan kata henti (negasi & bilangan dilindungi)
+    - use_lemmatization: Lemmatisasi bilingual (nlp-id untuk ID, spaCy untuk EN)
+    - flags: Objek PreprocessingFlags atau dict untuk mengeset seluruh flag sekaligus.
+    """
+    if flags is not None:
+        if hasattr(flags, "model_dump"):
+            d = flags.model_dump()
+        elif isinstance(flags, dict):
+            d = flags
+        else:
+            d = getattr(flags, "__dict__", {})
+        clean_html = d.get("clean_html", clean_html)
+        case_folding = d.get("case_folding", case_folding)
+        expand_contractions = d.get("expand_contractions", expand_contractions)
+        convert_numbers = d.get("convert_numbers", convert_numbers)
+        remove_punctuation = d.get("remove_punctuation", remove_punctuation)
+        preserve_years = d.get("preserve_years", preserve_years)
+        remove_stopwords = d.get("remove_stopwords", remove_stopwords)
+        use_lemmatization = d.get("use_lemmatization", use_lemmatization)
+
+    if not text:
+        return ""
+
+    # 0. Normalisasi HTML & jeda baris
+    if clean_html:
+        text = clean_html_and_newlines(text)
+
+    # 1. Lowercase (Case folding)
+    if case_folding:
+        text = text.lower()
+
+    # 2. Ekspansi Kontraksi Bahasa Inggris
+    if expand_contractions:
+        text = _expand_contractions(text)
+
+
+    # 3. Konversi Angka ke Kata Selektif
+    if convert_numbers:
+        text = convert_numbers_to_words(text)
+
+    # 4. Hapus tanda baca
+    if remove_punctuation:
+        text = text.translate(str.maketrans('', '', string.punctuation))
+
+    # 5. Hapus angka non-tahun (pertahankan angka tahun 4-digit rentang 1000 - 2099 jika preserve_years=True)
+    if preserve_years:
+        def _preserve_year(match):
+            val = match.group(0)
+            if len(val) == 4 and (val.startswith('1') or val.startswith('20')):
+                return val
+            return ""
+        text = re.sub(r'\b\d+\b', _preserve_year, text)
+    elif remove_punctuation:
+        text = re.sub(r'\b\d+\b', '', text)
+
+    # 6. Tokenisasi & Stopword removal
+    tokens = text.split()
+    if remove_stopwords:
+        tokens = [
+            word for word in tokens
+            if word.isdigit() or word in NEGATION_WORDS or word in NUMBER_WORDS or word not in STOP_WORDS
+        ]
+
+    # 7. Normalisasi (Lemmatisasi bilingual)
+    if use_lemmatization:
+        tokens = [_normalize_word(token) for token in tokens]
+
+    return " ".join(tokens)
+
+
+
+def lemmatize_text(text: str) -> str:
+    """
+    Melakukan lemmatisasi bilingual terhadap teks secara utuh.
+    Mengonversi kata inflektif (ID & EN) ke bentuk dasarnya (lemma)
+    tanpa menghapus stopwords atau merusak tanda baca.
+    """
+    if not text:
+        return ""
+
+    text = clean_html_and_newlines(text)
+
+    def _repl(match):
+        w = match.group(0)
+        return _normalize_word(w.lower())
+
+    return re.sub(r'\b[a-zA-Z0-9_-]+\b', _repl, text)
+
+
+def get_pos_tags(text: str, refine_foreign: bool = False) -> List[Tuple[str, str]]:
+    """
+    Melakukan Part-of-Speech (POS) Tagging pada teks bilingual (Bahasa Indonesia & Bahasa Inggris).
+
+    Parameter:
+        text: Kalimat / teks esai yang akan diberi tag POS.
+        refine_foreign: Jika True, kata yang terdeteksi sebagai kata asing ('FW')
+                        oleh tagger Indonesia akan diperjelas dengan kelas kata
+                        Bahasa Inggris dari spaCy (misal: 'FW (VERB)', 'FW (NOUN)').
+
+    Mengembalikan:
+        List of (token, pos_tag).
+        Contoh ID: [('Tumbuhan', 'NN'), ('membuat', 'VB'), ('makanan', 'NN')]
+        Contoh EN: [('Plants', 'NOUN'), ('produce', 'VERB'), ('food', 'NOUN')]
+    """
+    if not text:
+        return []
+
+    clean_text = clean_html_and_newlines(text)
+    if not clean_text:
+        return []
+
+    lang = detect_language(clean_text)
+
+    if lang == 'en':
+        doc = _en_nlp(clean_text)
+        return [(token.text, token.pos_) for token in doc if not token.is_space]
+    else:
+        raw_tags = _id_postagger.get_pos_tag(clean_text)
+        if not refine_foreign:
+            return raw_tags
+
+        refined_tags = []
+        for token, tag in raw_tags:
+            if tag == 'FW':
+                doc = _en_nlp(token)
+                en_pos = doc[0].pos_ if doc else 'X'
+                refined_tags.append((token, f"FW ({en_pos})"))
+            else:
+                refined_tags.append((token, tag))
+        return refined_tags
+

@@ -1,4 +1,5 @@
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Any
+
 import re
 from nlp_pipeline.preprocessing import preprocess_text
 from schemas import KeywordItem
@@ -7,7 +8,9 @@ from schemas import KeywordItem
 def calculate_rule_based_score(
     student_answer_raw: str,
     keywords: List[KeywordItem],
-    required_keywords_count: Optional[int] = None
+    required_keywords_count: Optional[int] = None,
+    convert_numbers: bool = True,
+    flags: Optional[Any] = None
 ) -> Tuple[float, List[str]]:
     """
     Menghitung skor rule-based berdasarkan kemunculan keyword dengan bobot dinamis.
@@ -29,7 +32,7 @@ def calculate_rule_based_score(
     if not keywords:
         return 0.0, []
 
-    processed_answer = preprocess_text(student_answer_raw)
+    processed_answer = preprocess_text(student_answer_raw, convert_numbers=convert_numbers, flags=flags)
     total_weight = sum(kw.weight for kw in keywords)
 
     if total_weight == 0:
@@ -56,13 +59,14 @@ def calculate_rule_based_score(
                     matched_variant_text = variant
                     break # Hentikan pencarian varian lain jika sudah ketemu
             else:
-                processed_variant = preprocess_text(variant)
+                processed_variant = preprocess_text(variant, convert_numbers=convert_numbers, flags=flags)
                 if processed_variant:
                     pattern = r'\b' + re.escape(processed_variant) + r'\b'
                     if re.search(pattern, processed_answer):
                         variant_matched = True
                         matched_variant_text = variant
                         break
+
 
         # Jika salah satu varian dari keyword ini ditemukan, berikan skor
         if variant_matched:

@@ -1,4 +1,4 @@
-from typing import List, Set
+from typing import List, Set, Optional, Any
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from nlp_pipeline.preprocessing import preprocess_text, NEGATION_WORDS
@@ -10,7 +10,12 @@ from nlp_pipeline.preprocessing import preprocess_text, NEGATION_WORDS
 _NEGATION_PENALTY = 0.35  # Penalti 35% per kata negasi yang tidak simetris
 
 
-def calculate_lsa_score(student_answer: str, reference_answers: List[str]) -> float:
+def calculate_lsa_score(
+    student_answer: str,
+    reference_answers: List[str],
+    convert_numbers: bool = True,
+    flags: Optional[Any] = None
+) -> float:
     """
     Menghitung skor LSA terhadap semua kunci jawaban yang diberikan guru.
     Mendukung multiple reference answers (misal: versi Bahasa Indonesia + Bahasa Inggris).
@@ -20,18 +25,19 @@ def calculate_lsa_score(student_answer: str, reference_answers: List[str]) -> fl
     - Terapkan negation penalty jika ada asimetri penggunaan kata negasi.
     - Ambil skor TERTINGGI sebagai skor final LSA.
     """
-    processed_student = preprocess_text(student_answer)
+    processed_student = preprocess_text(student_answer, convert_numbers=convert_numbers, flags=flags)
     if not processed_student:
         return 0.0
 
     best_score = 0.0
     for ref in reference_answers:
-        processed_ref = preprocess_text(ref)
+        processed_ref = preprocess_text(ref, convert_numbers=convert_numbers, flags=flags)
         if not processed_ref:
             continue
         score = _compute_similarity(processed_student, processed_ref)
         if score > best_score:
             best_score = score
+
 
     return best_score
 

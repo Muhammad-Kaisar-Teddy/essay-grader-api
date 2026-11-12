@@ -3,12 +3,14 @@ import sympy
 from typing import List, Optional
 from sympy.parsing.sympy_parser import parse_expr, standard_transformations, implicit_multiplication_application
 from schemas import MathStepItem
+from nlp_pipeline.preprocessing import clean_html_and_newlines
 
 def preprocess_math_text(text: str) -> List[str]:
     """
     Ekstrak semua baris/potongan teks yang mengandung persamaan (=).
-    Mendukung => atau newline atau koma sebagai pemisah.
+    Mendukung => atau newline (\n, \r\n, HTML <br>, <p>, <div>) atau koma sebagai pemisah.
     """
+    text = clean_html_and_newlines(text)
     text = text.replace("=>", "\n")
     text = re.sub(r'[,;]\s+', '\n', text)
     lines = text.split("\n")
@@ -16,6 +18,9 @@ def preprocess_math_text(text: str) -> List[str]:
     equations = []
     for line in lines:
         if "=" in line:
+            # Hapus penomoran langkah di awal baris (misal: "1.", "2)", "Langkah 1:", "Step 2:")
+            line = re.sub(r'^\s*(?:(?:langkah|step)\s*)?(?:\d+[\.\:\)]|\(\d+\))\s*', '', line, flags=re.IGNORECASE)
+
             # Hapus kata-kata bahasa Indonesia (huruf >2 karakter)
             cleaned = re.sub(r'\b[a-zA-Z]{3,}\b', '', line)
             
