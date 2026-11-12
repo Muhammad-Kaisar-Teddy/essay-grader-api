@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 test_set/
+test_set/test_result/
+evaluation_*.xlsx
+evaluation_*.txt
 results.csv
 sample_test_set.csv
 .env
