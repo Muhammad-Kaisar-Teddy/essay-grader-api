@@ -65,7 +65,14 @@ _wordnet_lemmatizer = WordNetLemmatizer()
 
 # Lemmatizer dan POS Tagger Bahasa Indonesia (nlp-id, berbasis kamus resmi KBBI)
 _id_lemmatizer = IdLemmatizer()
-_id_postagger = IdPosTag()
+_id_postagger: Optional[IdPosTag] = None
+
+
+def _get_id_postagger() -> IdPosTag:
+    global _id_postagger
+    if _id_postagger is None:
+        _id_postagger = IdPosTag()
+    return _id_postagger
 
 # Model Bahasa Inggris spaCy (lemmatizer + POS tagger)
 _en_nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
@@ -601,7 +608,7 @@ def get_pos_tags(text: str, refine_foreign: bool = False) -> List[Tuple[str, str
         doc = _en_nlp(clean_text)
         return [(token.text, token.pos_) for token in doc if not token.is_space]
     else:
-        raw_tags = _id_postagger.get_pos_tag(clean_text)
+        raw_tags = _get_id_postagger().get_pos_tag(clean_text)
         if not refine_foreign:
             return raw_tags
 
