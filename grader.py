@@ -2,7 +2,13 @@ from nlp_pipeline.rule_based import calculate_rule_based_score
 from nlp_pipeline.lsa_model import calculate_lsa_score
 from nlp_pipeline.math_evaluator import calculate_math_score
 from nlp_pipeline.preprocessing import clean_html_and_newlines
-from schemas import EssayRequest, GraderResponse
+from schemas import (
+    EssayRequest,
+    GraderResponse,
+    BatchEssayRequest,
+    BatchGraderResponse,
+    BatchGraderResultItem,
+)
 
 
 def grade_essay(request: EssayRequest) -> GraderResponse:
@@ -84,4 +90,32 @@ def grade_essay(request: EssayRequest) -> GraderResponse:
         math_score=round(math_score, 2),
         matched_keywords=matched,
         essay_mode=request.resolve_essay_mode()
+    )
+
+
+def grade_essay_batch(batch_request: BatchEssayRequest) -> BatchGraderResponse:
+    """
+    Menilai sekumpulan jawaban esai (misal 25-30 butir soal dari 1 siswa) sekaligus
+    dalam satu panggilan HTTP untuk memangkas overhead jaringan & antrean koneksi.
+    """
+    results = []
+    for item in batch_request.items:
+        updates = {}
+        if item.subject is None and batch_request.subject is not None:
+            updates["subject"] = batch_request.subject
+        if item.essay_mode is None and batch_request.essay_mode is not None:
+            updates["essay_mode"] = batch_request.essay_mode
+
+        effective_item = item.model_copy(update=updates) if updates else item
+        graded = grade_essay(effective_item)
+        results.append(
+            BatchGraderResultItem(
+                id=item.id,
+                **graded.model_dump()
+            )
+        )
+
+    return BatchGraderResponse(
+        results=results,
+        total_items=len(results)
     )

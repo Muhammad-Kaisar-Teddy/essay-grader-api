@@ -1272,4 +1272,43 @@ def test_english_word_normalization_in_indonesian_context():
     assert _normalize_word("important", lang="id") == "important"
 
 
+# ---------------------------------------------------------------------------
+# Test 40: Endpoint Batch Grading (/grade-batch) — 1 Request untuk Banyak Soal
+# ---------------------------------------------------------------------------
+def test_grade_batch_endpoint_and_25_items():
+    batch_payload = {
+        "subject": "Bahasa Indonesia (XI)",
+        "items": [
+            {
+                "id": i,
+                "student_answer": "Teks eksposisi menyampaikan pendapat atau argumen disertai fakta yang jelas.",
+                "reference_answers": [
+                    "Teks eksposisi adalah teks yang mengemukakan gagasan atau pendapat disertai fakta."
+                ],
+                "keywords": [
+                    {"keyword": "pendapat", "weight": 1.0},
+                    {"keyword": "fakta", "weight": 1.0},
+                ],
+                "rule_weight": 0.5,
+                "lsa_weight": 0.5,
+                "max_score": 4.0,
+            }
+            for i in range(1, 26)
+        ],
+    }
+
+    res = client.post("/grade-batch", json=batch_payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total_items"] == 25
+    assert len(data["results"]) == 25
+    for idx, item_res in enumerate(data["results"], start=1):
+        assert item_res["id"] == idx
+        assert item_res["essay_mode"] == "linguistic"
+        assert item_res["rule_based_score"] == 100.0
+        assert item_res["final_score"] > 70.0
+        assert 0.0 < item_res["scaled_score"] <= 4.0
+
+
+
 

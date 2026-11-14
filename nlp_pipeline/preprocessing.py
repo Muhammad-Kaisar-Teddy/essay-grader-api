@@ -477,6 +477,31 @@ def preprocess_text(
     if not text:
         return ""
 
+    return _preprocess_text_cached(
+        text,
+        bool(clean_html),
+        bool(case_folding),
+        bool(expand_contractions),
+        bool(convert_numbers),
+        bool(remove_punctuation),
+        bool(preserve_years),
+        bool(remove_stopwords),
+        bool(use_lemmatization),
+    )
+
+
+@lru_cache(maxsize=8192)
+def _preprocess_text_cached(
+    text: str,
+    clean_html: bool,
+    case_folding: bool,
+    expand_contractions: bool,
+    convert_numbers: bool,
+    remove_punctuation: bool,
+    preserve_years: bool,
+    remove_stopwords: bool,
+    use_lemmatization: bool,
+) -> str:
     # 0. Normalisasi HTML & jeda baris
     if clean_html:
         text = clean_html_and_newlines(text)
@@ -547,6 +572,7 @@ def lemmatize_text(text: str) -> str:
     return re.sub(r'\b[a-zA-Z0-9_-]+\b', _repl, text)
 
 
+@lru_cache(maxsize=4096)
 def get_pos_tags(text: str, refine_foreign: bool = False) -> List[Tuple[str, str]]:
     """
     Melakukan Part-of-Speech (POS) Tagging pada teks bilingual (Bahasa Indonesia & Bahasa Inggris).

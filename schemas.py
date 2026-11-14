@@ -1,6 +1,6 @@
 # pyrefly: ignore [missing-import]
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Union
 
 LINGUISTIC_SUBJECT_KEYWORDS = (
     "bahasa", "indonesia", "inggris", "english", "sastra", "bindo", "bing",
@@ -152,6 +152,44 @@ class GraderResponse(BaseModel):
     math_score: float = Field(0.0, description="Skor evaluasi matematis menggunakan SymPy (0 - 100)")
     matched_keywords: List[str] = Field(..., description="Kata kunci yang berhasil dicocokkan")
     essay_mode: Optional[str] = Field(None, description="Mode esai yang aktif saat penilaian (linguistic / exact / conceptual)")
+
+
+class BatchEssayItem(EssayRequest):
+    id: Optional[Union[str, int]] = Field(
+        None,
+        description="ID unik butir soal/jawaban (misal id_detail dari CBT) untuk pemetaan hasil batch"
+    )
+
+
+class BatchGraderResultItem(GraderResponse):
+    id: Optional[Union[str, int]] = Field(
+        None,
+        description="ID unik butir soal/jawaban yang sesuai dengan item pada request batch"
+    )
+
+
+class BatchEssayRequest(BaseModel):
+    subject: Optional[str] = Field(
+        None,
+        description="Default nama mata pelajaran untuk seluruh item dalam batch jika item tidak menyertakan subject tersendiri"
+    )
+    essay_mode: Optional[Literal["linguistic", "exact", "conceptual"]] = Field(
+        None,
+        description="Default mode esai untuk seluruh item dalam batch jika item tidak menyertakan essay_mode tersendiri"
+    )
+    items: List[BatchEssayItem] = Field(
+        ...,
+        min_length=1,
+        description="Daftar jawaban esai siswa yang akan dinilai sekaligus dalam satu panggilan HTTP"
+    )
+
+
+class BatchGraderResponse(BaseModel):
+    results: List[BatchGraderResultItem] = Field(
+        ...,
+        description="Daftar hasil penilaian untuk masing-masing item sesuai urutan request"
+    )
+    total_items: int = Field(..., description="Jumlah total butir esai yang dinilai dalam batch")
 
 
 class PosTagItem(BaseModel):
