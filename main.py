@@ -19,7 +19,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def read_root():
     return {"message": "Welcome to Hybrid Essay Grader API"}
 

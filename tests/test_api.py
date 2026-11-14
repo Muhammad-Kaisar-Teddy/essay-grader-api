@@ -9,6 +9,9 @@ def test_read_root():
     assert response.status_code == 200
     assert response.json() == {"message": "Welcome to Hybrid Essay Grader API"}
 
+    head_response = client.head("/")
+    assert head_response.status_code == 200
+
 # ---------------------------------------------------------------------------
 # Test 1: Kasus dasar Bahasa Indonesia
 # ---------------------------------------------------------------------------
