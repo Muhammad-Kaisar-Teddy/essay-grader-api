@@ -146,7 +146,7 @@ def calculate_rule_based_score(
                 )
 
                 if variant_with_stops:
-                    pattern_with_stops = r'\b' + re.escape(variant_with_stops) + r'\b'
+                    pattern_with_stops = _build_strict_pattern(variant_with_stops)
                     if re.search(pattern_with_stops, processed_answer_with_stops):
                         variant_matched = True
                         matched_variant_text = clean_variant
@@ -155,7 +155,7 @@ def calculate_rule_based_score(
                 # 2. Jika varian memang tidak mengandung stopword (sama setelah stopword removal),
                 #    cocokkan juga ke processed_answer agar tetap toleran bila siswa menyelipkan kata penghubung.
                 if variant_no_stops and variant_no_stops == variant_with_stops:
-                    pattern_no_stops = r'\b' + re.escape(variant_no_stops) + r'\b'
+                    pattern_no_stops = _build_strict_pattern(variant_no_stops)
                     if re.search(pattern_no_stops, processed_answer):
                         variant_matched = True
                         matched_variant_text = clean_variant
@@ -167,7 +167,7 @@ def calculate_rule_based_score(
             expanded_pairs = expand_keyword_variants(non_strict_variants, flags=flags)
             for syn_processed, syn_label in expanded_pairs:
                 if syn_processed:
-                    pattern = r'\b' + re.escape(syn_processed) + r'\b'
+                    pattern = _build_strict_pattern(syn_processed)
                     if re.search(pattern, processed_answer) or re.search(pattern, processed_answer_with_stops):
                         variant_matched = True
                         matched_variant_text = syn_label

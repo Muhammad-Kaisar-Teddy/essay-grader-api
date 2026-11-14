@@ -5,10 +5,16 @@ from sympy.parsing.sympy_parser import (
     parse_expr,
     standard_transformations,
     implicit_multiplication_application,
+    rationalize,
 )
 from schemas import MathStepItem, KeywordItem
 from nlp_pipeline.preprocessing import clean_html_and_newlines
 
+
+_RESERVED_MATH_FUNCS: Set[str] = {
+    "sin", "cos", "tan", "asin", "acos", "atan",
+    "sinh", "cosh", "tanh", "sqrt", "log", "ln", "exp", "abs", "pi",
+}
 
 # ==============================================================================
 # KAMUS LABEL VARIABEL STANDAR BILINGUAL (AKTIF JIKA SIMBOL ADA DI math_steps)
@@ -56,8 +62,8 @@ def _normalize_number_str(num_str: str, scale_word: str = "") -> Optional[str]:
     if not num_str:
         return None
     s = num_str.strip()
-    # Format ribuan Indonesia: 30.000 atau 24.000.000 -> hapus titik ribuan
-    s = re.sub(r"(?<=\d)\.(?=\d{3}(?!\d))", "", s)
+    # Format ribuan Indonesia: 30.000 atau 24.000.000 -> hapus titik ribuan (abaikan desimal 0.xxx)
+    s = re.sub(r"(?<!\b0)(?<=\d)\.(?=\d{3}(?!\d))", "", s)
     # Format desimal koma Indonesia: 7,5 atau 0,0005 -> titik desimal
     s = re.sub(r"(?<=\d),(?=\d)", ".", s)
     try:
@@ -103,7 +109,8 @@ def _extract_expected_symbols(expected_steps: Optional[List[MathStepItem]]) -> S
         return {"P", "Q"}
     for step in expected_steps:
         for tok in re.findall(r"\b[A-Za-z][A-Za-z0-9_]*\b", step.equation or ""):
-            symbols.add(tok)
+            if tok not in _RESERVED_MATH_FUNCS:
+                symbols.add(tok)
     return symbols or {"P", "Q"}
 
 
@@ -324,10 +331,10 @@ def _clean_single_equation(eq_line: str, expected_symbols: Set[str]) -> Optional
     # Hapus penanda mata uang dan satuan pendek (termasuk 'Rp' 2 huruf!)
     line = re.sub(r"\b(?:rp\.?|idr|usd|pcs|unit|units|buah)\b", "", line, flags=re.IGNORECASE)
 
-    # Hapus kata teks biasa (>= 3 huruf) yang bukan simbol variabel target
+    # Hapus kata teks biasa (>= 3 huruf) yang bukan simbol variabel target / fungsi matematis
     def _strip_non_symbol_words(match: re.Match) -> str:
         word = match.group(0)
-        if word in expected_symbols or word in {"Qd", "Qs", "Pd", "Ps"}:
+        if word in expected_symbols or word in {"Qd", "Qs", "Pd", "Ps"} or word in _RESERVED_MATH_FUNCS:
             return word
         return ""
 
@@ -339,8 +346,8 @@ def _clean_single_equation(eq_line: str, expected_symbols: Set[str]) -> Optional
     # Hapus koma yang tidak diapit angka (misal koma penutup kalimat "10.000, benar kan?")
     cleaned = re.sub(r"(?<!\d),|,(?!\d)", " ", cleaned)
 
-    # Format angka (ribu vs desimal)
-    cleaned = re.sub(r"(?<=\d)\.(?=\d{3}(?!\d))", "", cleaned)
+    # Format angka (ribu vs desimal; pertahankan desimal 0.xxx)
+    cleaned = re.sub(r"(?<!\b0)(?<=\d)\.(?=\d{3}(?!\d))", "", cleaned)
     cleaned = re.sub(r"(?<=\d),(?=\d)", ".", cleaned)
 
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
@@ -423,7 +430,10 @@ def parse_equation(
 
     left_str, right_str = eq_str.split("=", 1)
 
-    transformations = standard_transformations + (implicit_multiplication_application,)
+    transformations = standard_transformations + (
+        implicit_multiplication_application,
+        rationalize,
+    )
 
     # Q, S, D, E, I, N, O adalah kata/simbol khusus di SymPy; paksa menjadi Symbol biasa
     local_dict: Dict[str, Any] = {
@@ -442,7 +452,12 @@ def parse_equation(
     }
     if extra_symbols:
         for sym in extra_symbols:
-            if sym and sym not in local_dict and re.match(r"^[A-Za-z][A-Za-z0-9_]*$", sym):
+            if (
+                sym
+                and sym not in local_dict
+                and sym not in _RESERVED_MATH_FUNCS
+                and re.match(r"^[A-Za-z][A-Za-z0-9_]*$", sym)
+            ):
                 local_dict[sym] = sympy.Symbol(sym)
 
     try:

@@ -1183,3 +1183,93 @@ def test_subject_and_essay_mode_auto_triggers():
     assert res_api["essay_mode"] == "linguistic"
 
 
+# ---------------------------------------------------------------------------
+# Test 37: Regresi Mode Exact — Angka Non-4-Digit & Keyword Tanda Baca
+# ---------------------------------------------------------------------------
+def test_exact_mode_preserves_numbers_and_punctuation_keywords():
+    from schemas import EssayRequest
+    from nlp_pipeline.preprocessing import preprocess_text
+
+    req = EssayRequest(
+        subject="Matematika Wajib (XI)",
+        student_answer="Nilai x = 15 dan y = 30000 serta 0.5",
+        reference_answers=["Nilai x = 15 dan y = 30000 serta 0.5"],
+        keywords=[
+            {"keyword": "15", "weight": 1.0},
+            {"keyword": "0.5", "weight": 1.0},
+        ],
+    )
+    flags = req.get_preprocessing_flags()
+    assert flags.preserve_years is False
+
+    cleaned = preprocess_text(
+        req.student_answer,
+        remove_punctuation=flags.remove_punctuation,
+        remove_stopwords=flags.remove_stopwords,
+        use_lemmatization=flags.use_lemmatization,
+        convert_numbers=flags.convert_numbers,
+        preserve_years=flags.preserve_years,
+    )
+    assert "15" in cleaned
+    assert "30000" in cleaned
+    assert "0.5" in cleaned
+
+    res_num = client.post("/grade", json={
+        "subject": "Matematika Wajib (XI)",
+        "student_answer": "Nilai x = 15 dan y = 30000 serta 0.5",
+        "reference_answers": ["Nilai x = 15 dan y = 30000 serta 0.5"],
+        "keywords": [
+            {"keyword": "15", "weight": 1.0},
+            {"keyword": "0.5", "weight": 1.0},
+        ],
+        "rule_weight": 0.5,
+        "lsa_weight": 0.5,
+    }).json()
+    assert res_num["essay_mode"] == "exact"
+    assert res_num["rule_based_score"] == 100.0
+    assert res_num["final_score"] > 90.0
+
+    # Non-strict keyword bertanda baca seperti "(15, 30000)" harus tetap cocok di mode exact
+    res_paren = client.post("/grade", json={
+        "subject": "Matematika Wajib (XI)",
+        "student_answer": "Titik potong berada pada (15, 30000) dengan Q = 15",
+        "reference_answers": ["Titik potong berada pada (15, 30000) dengan Q = 15"],
+        "keywords": [{"keyword": "(15, 30000)", "weight": 1.0, "strict": False}],
+        "math_steps": [{"equation": "Q = 15", "weight": 1.0}],
+        "rule_weight": 0.5,
+        "lsa_weight": 0.0,
+        "math_weight": 0.5,
+    }).json()
+    assert res_paren["rule_based_score"] == 100.0
+    assert res_paren["math_score"] == 100.0
+    assert res_paren["final_score"] == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Test 38: Regresi Math Evaluator — Desimal 0.xxx & Fungsi Reserved (sqrt)
+# ---------------------------------------------------------------------------
+def test_math_evaluator_decimal_zero_prefix_and_reserved_funcs():
+    from nlp_pipeline.math_evaluator import extract_math_equations, calculate_math_score
+    from schemas import MathStepItem
+
+    extracted = extract_math_equations("x = 0.125")
+    assert extracted == ["x = 0.125"]
+
+    steps = [MathStepItem(equation="v = sqrt(2*g*h)", weight=1.0)]
+    score = calculate_math_score("v = (2*g*h)**0.5", steps)
+    assert score == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Test 39: Regresi Normalisasi Kata Inggris saat Code-Switching
+# ---------------------------------------------------------------------------
+def test_english_word_normalization_in_indonesian_context():
+    from nlp_pipeline.preprocessing import _is_known_english_word, _normalize_word
+
+    assert _is_known_english_word("important") is True
+    assert _is_known_english_word("running") is True
+    assert _normalize_word("running", lang="id") == "run"
+    assert _normalize_word("important", lang="id") == "important"
+
+
+

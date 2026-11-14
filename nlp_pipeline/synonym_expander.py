@@ -25,6 +25,7 @@ from nlp_pipeline.preprocessing import (
     NUMBER_WORDS,
     STOP_WORDS,
     _normalize_word,
+    _id_lemmatizer,
 )
 
 # Coba muat WordNet dari NLTK secara aman (tanpa memicu download paksa saat offline)
@@ -333,24 +334,36 @@ def _get_wordnet_synonyms(norm_token: str, pos_tag: Optional[str] = None) -> Set
         wn_pos = wn.NOUN
 
     try:
+        # Cegah homograf kata dasar Bahasa Indonesia ("air", "ban", "cat", "jam")
+        # tercemar sinonim WordNet Bahasa Inggris; gunakan korpus OMW 'ind' jika ID.
+        if norm_token in _id_lemmatizer.root_word:
+            if not _OMW_AVAILABLE:
+                return results
+            synsets = wn.synsets(norm_token, pos=wn_pos, lang="ind")[:2]
+            for syn in synsets:
+                for lemma_name in syn.lemma_names("ind"):
+                    cand = lemma_name.lower().replace("_", " ")
+                    if " " not in cand:
+                        norm_cand = _normalize_word(cand, lang="id")
+                        if not _is_guarded_token(norm_cand):
+                            results.add(norm_cand)
+            return results
+
         # Batasi hanya pada synset utama (maksimal 2 synset teratas) untuk mencegah
         # perluasan makna sekunder/idiomatik yang terlalu jauh (polysemy drift).
         synsets = wn.synsets(norm_token, pos=wn_pos)[:2]
         for syn in synsets:
             for lemma in syn.lemmas():
-                # Pastikan bukan antonim
-                if lemma.antonyms():
-                    pass
                 cand = lemma.name().lower().replace("_", " ")
                 if " " not in cand:
-                    norm_cand = _normalize_word(cand)
+                    norm_cand = _normalize_word(cand, lang="en")
                     if not _is_guarded_token(norm_cand):
                         results.add(norm_cand)
             if _OMW_AVAILABLE:
                 for lemma_name in syn.lemma_names("ind"):
                     cand = lemma_name.lower().replace("_", " ")
                     if " " not in cand:
-                        norm_cand = _normalize_word(cand)
+                        norm_cand = _normalize_word(cand, lang="id")
                         if not _is_guarded_token(norm_cand):
                             results.add(norm_cand)
     except Exception:

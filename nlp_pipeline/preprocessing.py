@@ -109,22 +109,31 @@ def _lemmatize_en_word(word: str) -> str:
         return word
 
 
+@lru_cache(maxsize=10000)
+def _stem_id_word(word: str) -> str:
+    """Stemming fallback bahasa Indonesia menggunakan Sastrawi dengan cache."""
+    try:
+        return _sastrawi.stem(word)
+    except Exception:
+        return word
+
+
 def _is_known_english_word(word: str) -> bool:
-    """Periksa apakah kata terdaftar dalam kosakata bahasa Inggris (spaCy vocab)."""
+    """Periksa apakah kata terdaftar dalam kosakata bahasa Inggris (spaCy string store)."""
     if not word:
         return False
-    return word in _en_nlp.vocab
+    return word in _en_nlp.vocab.strings or word.lower() in _en_nlp.vocab.strings
 
 
+@lru_cache(maxsize=20000)
 def _normalize_word(word: str, lang: Optional[str] = None) -> str:
     """
     Menormalisasi satu kata menggunakan Lemmatizer Bilingual yang sadar bahasa (language-aware):
     1. Negasi, kata bilangan, dan digit dikembalikan apa adanya.
-    2. Jika `lang == 'id'`: prioritaskan `nlp-id`, lindungi kata dasar baku KBBI (`root_word`),
-       dan hanya gunakan spaCy untuk kata sisipan asing (code-mixing) yang valid di kosakata EN.
-    3. Jika `lang == 'en'`: prioritaskan spaCy EN, dan hanya fallback ke `nlp-id` jika ada kata
+    2. Jika `lang == 'en'`: prioritaskan spaCy EN, dan hanya fallback ke `nlp-id` jika ada kata
        sisipan ID (tanpa memanggil Sastrawi pada kata bahasa Inggris).
-    4. Jika `lang is None`: gunakan pengecekan bilingual dengan pelindung `root_word` KBBI.
+    3. Jika `lang == 'id'` atau `lang is None`: prioritaskan `nlp-id`, lindungi kata dasar baku KBBI (`root_word`),
+       lalu gunakan spaCy untuk kata bahasa Inggris/code-mixing (tanpa memanggil Sastrawi pada kata Inggris).
     """
     if word in NEGATION_WORDS or word in NUMBER_WORDS or word.isdigit():
         return word
@@ -154,14 +163,16 @@ def _normalize_word(word: str, lang: Optional[str] = None) -> str:
         return word
 
     # 3. Lemmatizer Bahasa Inggris (spaCy) untuk kata asing/code-mixing
-    #    Hanya diterapkan jika kata dikenali di kosakata bahasa Inggris (atau lang is None).
-    if lang is None or _is_known_english_word(word):
+    known_en = _is_known_english_word(word)
+    if lang is None or known_en:
         en_lemma = _lemmatize_en_word(word)
         if en_lemma != word:
             return en_lemma
+        if known_en:
+            return word
 
     # 4. Fallback: jika Sastrawi menghasilkan bentuk yang lebih pendek
-    stemmed = _sastrawi.stem(word)
+    stemmed = _stem_id_word(word)
     if len(stemmed) < len(word):
         return stemmed
 
@@ -381,7 +392,7 @@ def detect_language(text: str) -> str:
 
 
 
-def convert_numbers_to_words(text: str, max_val: int = 100) -> str:
+def convert_numbers_to_words(text: str, max_val: int = 100, lang: Optional[str] = None) -> str:
     """
     Mengonversi bilangan bulat (0 s.d max_val, default 100) menjadi kata secara selektif.
     - Mendukung bilingual (Bahasa Indonesia & Bahasa Inggris secara otomatis).
@@ -392,7 +403,8 @@ def convert_numbers_to_words(text: str, max_val: int = 100) -> str:
     if not text:
         return ""
 
-    lang = detect_language(text)
+    if lang is None:
+        lang = detect_language(text)
 
     lines = text.split('\n')
     converted_lines = []
@@ -483,7 +495,7 @@ def preprocess_text(
 
     # 3. Konversi Angka ke Kata Selektif
     if convert_numbers:
-        text = convert_numbers_to_words(text)
+        text = convert_numbers_to_words(text, lang=detected_lang)
 
     # 4. Hapus tanda baca
     if remove_punctuation:

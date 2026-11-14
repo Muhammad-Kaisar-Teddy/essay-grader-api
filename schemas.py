@@ -119,6 +119,7 @@ class EssayRequest(BaseModel):
             if mode == "exact":
                 data["remove_punctuation"] = False
                 data["convert_numbers"] = False
+                data["preserve_years"] = False
                 data["use_lemmatization"] = False
                 data["use_synonyms"] = False
             elif mode in ("linguistic", "conceptual"):
