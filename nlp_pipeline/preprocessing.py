@@ -39,7 +39,7 @@ NEGATION_WORDS = {
 }
 
 # ---------------------------------------------------------------------------
-# Download NLTK resources jika belum ada
+# Download NLTK resources jika belum ada (aman untuk mode offline)
 # ---------------------------------------------------------------------------
 for _resource, _pkg in [
     ('corpora/stopwords', 'stopwords'),
@@ -51,7 +51,10 @@ for _resource, _pkg in [
     try:
         nltk.data.find(_resource)
     except LookupError:
-        nltk.download(_pkg, quiet=True)
+        try:
+            nltk.data.find(f"{_resource}.zip")
+        except LookupError:
+            pass
 
 # ---------------------------------------------------------------------------
 # Inisialisasi tools NLP Bilingual
@@ -106,28 +109,58 @@ def _lemmatize_en_word(word: str) -> str:
         return word
 
 
-def _normalize_word(word: str) -> str:
+def _is_known_english_word(word: str) -> bool:
+    """Periksa apakah kata terdaftar dalam kosakata bahasa Inggris (spaCy vocab)."""
+    if not word:
+        return False
+    return word in _en_nlp.vocab
+
+
+def _normalize_word(word: str, lang: Optional[str] = None) -> str:
     """
-    Menormalisasi satu kata menggunakan Lemmatizer Bilingual:
+    Menormalisasi satu kata menggunakan Lemmatizer Bilingual yang sadar bahasa (language-aware):
     1. Negasi, kata bilangan, dan digit dikembalikan apa adanya.
-    2. Coba Lemmatizer Bahasa Indonesia (nlp-id).
-    3. Coba Lemmatizer Bahasa Inggris (spaCy en_core_web_sm).
-    4. Fallback ke Sastrawi jika masih memiliki imbuhan kompleks yang dapat dipangkas.
+    2. Jika `lang == 'id'`: prioritaskan `nlp-id`, lindungi kata dasar baku KBBI (`root_word`),
+       dan hanya gunakan spaCy untuk kata sisipan asing (code-mixing) yang valid di kosakata EN.
+    3. Jika `lang == 'en'`: prioritaskan spaCy EN, dan hanya fallback ke `nlp-id` jika ada kata
+       sisipan ID (tanpa memanggil Sastrawi pada kata bahasa Inggris).
+    4. Jika `lang is None`: gunakan pengecekan bilingual dengan pelindung `root_word` KBBI.
     """
     if word in NEGATION_WORDS or word in NUMBER_WORDS or word.isdigit():
         return word
 
+    if lang == "en":
+        # 1. Lemmatizer Bahasa Inggris (spaCy)
+        en_lemma = _lemmatize_en_word(word)
+        if en_lemma != word:
+            return en_lemma
+
+        # 2. Jika ada kata sisipan Bahasa Indonesia (code-mixing)
+        id_lemma = _lemmatize_id_word(word)
+        if id_lemma != word:
+            return id_lemma
+
+        return word
+
+    # Untuk lang == "id" atau lang is None:
     # 1. Lemmatizer Bahasa Indonesia (nlp-id)
     id_lemma = _lemmatize_id_word(word)
     if id_lemma != word:
         return id_lemma
 
-    # 2. Lemmatizer Bahasa Inggris (spaCy)
-    en_lemma = _lemmatize_en_word(word)
-    if en_lemma != word:
-        return en_lemma
+    # 2. Pelindung kata dasar KBBI: jika sudah merupakan kata dasar baku (mis. "boros", "kardus"),
+    #    jangan biarkan lemmatizer bahasa Inggris (spaCy) atau stemmer lain memotong akhiran '-s'.
+    if word in _id_lemmatizer.root_word:
+        return word
 
-    # 3. Fallback: jika Sastrawi menghasilkan bentuk yang lebih pendek
+    # 3. Lemmatizer Bahasa Inggris (spaCy) untuk kata asing/code-mixing
+    #    Hanya diterapkan jika kata dikenali di kosakata bahasa Inggris (atau lang is None).
+    if lang is None or _is_known_english_word(word):
+        en_lemma = _lemmatize_en_word(word)
+        if en_lemma != word:
+            return en_lemma
+
+    # 4. Fallback: jika Sastrawi menghasilkan bentuk yang lebih pendek
     stemmed = _sastrawi.stem(word)
     if len(stemmed) < len(word):
         return stemmed
@@ -336,10 +369,13 @@ def detect_language(text: str) -> str:
     elif id_matches > en_matches:
         return 'id'
 
-    # Fallback jika skor indikator seimbang: cek leksikon WordNet (EN) vs nlp-id (ID)
-    from nltk.corpus import wordnet
+    # Fallback jika skor indikator seimbang: cek leksikon ID (nlp-id) vs EN (WordNet / spaCy vocab)
     id_count = sum(1 for w in unique_words if w in _id_lemmatizer.lemma_dict or w in _id_lemmatizer.root_word)
-    en_count = sum(1 for w in unique_words if wordnet.synsets(w))
+    try:
+        from nltk.corpus import wordnet
+        en_count = sum(1 for w in unique_words if wordnet.synsets(w))
+    except LookupError:
+        en_count = sum(1 for w in unique_words if _is_known_english_word(w))
 
     return 'en' if en_count > id_count else 'id'
 
@@ -433,6 +469,9 @@ def preprocess_text(
     if clean_html:
         text = clean_html_and_newlines(text)
 
+    # Deteksi bahasa dominan teks sebelum normalisasi / lemmatisasi
+    detected_lang = detect_language(text)
+
     # 1. Lowercase (Case folding)
     if case_folding:
         text = text.lower()
@@ -469,9 +508,9 @@ def preprocess_text(
             if word.isdigit() or word in NEGATION_WORDS or word in NUMBER_WORDS or word not in STOP_WORDS
         ]
 
-    # 7. Normalisasi (Lemmatisasi bilingual)
+    # 7. Normalisasi (Lemmatisasi bilingual sadar-bahasa)
     if use_lemmatization:
-        tokens = [_normalize_word(token) for token in tokens]
+        tokens = [_normalize_word(token, lang=detected_lang) for token in tokens]
 
     return " ".join(tokens)
 
@@ -487,10 +526,11 @@ def lemmatize_text(text: str) -> str:
         return ""
 
     text = clean_html_and_newlines(text)
+    detected_lang = detect_language(text)
 
     def _repl(match):
         w = match.group(0)
-        return _normalize_word(w.lower())
+        return _normalize_word(w.lower(), lang=detected_lang)
 
     return re.sub(r'\b[a-zA-Z0-9_-]+\b', _repl, text)
 

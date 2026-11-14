@@ -33,10 +33,15 @@ def grade_essay(request: EssayRequest) -> GraderResponse:
         flags=flags
     )
     
-    # 2. Evaluasi Matematis (jika ada math_steps)
+    # 2. Evaluasi Matematis (jika ada math_steps), bawa konteks referensi & keywords
     math_score = 0.0
     if request.math_steps:
-        math_score = calculate_math_score(clean_student_answer, request.math_steps)
+        math_score = calculate_math_score(
+            clean_student_answer,
+            request.math_steps,
+            reference_answers=clean_reference_answers,
+            keywords=request.keywords,
+        )
 
     # 3. Hitung Skor Faktual (Srb) gabungan dari Keyword dan Math
     factual_weight = request.rule_weight + request.math_weight
@@ -77,5 +82,6 @@ def grade_essay(request: EssayRequest) -> GraderResponse:
         rule_based_score=round(rule_score, 2),
         lsa_score=round(lsa_score, 2),
         math_score=round(math_score, 2),
-        matched_keywords=matched
+        matched_keywords=matched,
+        essay_mode=request.resolve_essay_mode()
     )

@@ -1,6 +1,18 @@
 # pyrefly: ignore [missing-import]
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Literal
+
+LINGUISTIC_SUBJECT_KEYWORDS = (
+    "bahasa", "indonesia", "inggris", "english", "sastra", "bindo", "bing",
+    "arab", "jepang", "jerman", "mandarin", "prancis", "perancis", "daerah",
+    "sunda", "jawa", "lampung", "linguistic", "linguistik",
+)
+
+EXACT_SUBJECT_KEYWORDS = (
+    "matematika", "math", "fisika", "physics", "kimia", "chemistry",
+    "akuntansi", "statistika", "exact", "eksakta",
+)
+
 
 class KeywordItem(BaseModel):
     keyword: str = Field(..., description="Kata kunci")
@@ -20,9 +32,18 @@ class PreprocessingFlags(BaseModel):
     preserve_years: bool = Field(True, description="Pertahankan angka tahun 4 digit rentang 1000 - 2099")
     remove_stopwords: bool = Field(True, description="Hapus kata henti (stopwords)")
     use_lemmatization: bool = Field(True, description="Lemmatisasi bilingual (nlp-id untuk ID, spaCy untuk EN)")
+    use_synonyms: bool = Field(True, description="Ekspansi sinonim otomatis (WordNet/Tesaurus) pada Rule-Based dan penyelarasan kanonik pada LSA")
 
 
 class EssayRequest(BaseModel):
+    subject: Optional[str] = Field(
+        None,
+        description="Nama mata pelajaran dari Sistem Informasi Asesmen (misal: 'Bahasa Indonesia (XI)', 'Matematika (X)', 'Informatika (XI)', 'Sejarah')"
+    )
+    essay_mode: Optional[Literal["linguistic", "exact", "conceptual"]] = Field(
+        None,
+        description="Mode esai eksplisit ('linguistic', 'exact', atau 'conceptual'). Jika kosong, otomatis ditentukan dari subject dan math_steps."
+    )
     student_answer: str = Field(..., description="Jawaban esai dari siswa (bisa campuran Bahasa Indonesia & Inggris)")
     reference_answers: List[str] = Field(
         ...,
@@ -54,16 +75,67 @@ class EssayRequest(BaseModel):
     preserve_years: Optional[bool] = Field(None, description="Shortcut On/Off preservasi tahun")
     remove_stopwords: Optional[bool] = Field(None, description="Shortcut On/Off stopword removal")
     use_lemmatization: Optional[bool] = Field(None, description="Shortcut On/Off lemmatisasi")
+    use_synonyms: Optional[bool] = Field(None, description="Shortcut On/Off ekspansi sinonim otomatis")
     
     max_score: float = Field(100.0, ge=0.0, description="Skor maksimal/poin penuh untuk butir soal ini (default 100.0)")
 
+    def resolve_essay_mode(self) -> Literal["linguistic", "exact", "conceptual"]:
+        """
+        Menentukan mode esai ('linguistic', 'exact', 'conceptual') secara otomatis:
+        1. Prioritas 1: Jika `essay_mode` ditentukan secara eksplisit.
+        2. Prioritas 2: Jika soal memiliki `math_steps` atau `math_weight > 0` -> 'exact'.
+        3. Prioritas 3: Berdasarkan pencocokan kata kunci pada nama `subject` dari Sistem Informasi Asesmen:
+           - Mengandung kata kunci bahasa/sastra -> 'linguistic'
+           - Mengandung kata kunci eksakta/matematika -> 'exact'
+           - Selain itu (Sejarah, Informatika, Biologi, Ekonomi teori, dll.) -> 'conceptual'
+        """
+        if self.essay_mode in ("linguistic", "exact", "conceptual"):
+            return self.essay_mode
+
+        is_math_question = bool(self.math_steps) or (self.math_weight > 0)
+        if is_math_question:
+            return "exact"
+
+        if self.subject and self.subject.strip():
+            subj_norm = self.subject.strip().lower().replace("_", " ").replace("-", " ")
+            if any(kw in subj_norm for kw in LINGUISTIC_SUBJECT_KEYWORDS):
+                return "linguistic"
+            if any(kw in subj_norm for kw in EXACT_SUBJECT_KEYWORDS):
+                return "exact"
+            return "conceptual"
+
+        return "conceptual"
+
     def get_preprocessing_flags(self) -> PreprocessingFlags:
-        """Menggabungkan preprocessing_flags objek dengan shortcut flags (jika ada)."""
+        """
+        Menggabungkan preset dari mode esai ('linguistic', 'exact', 'conceptual')
+        dengan `preprocessing_flags` objek dan shortcut flags eksplisit (jika ada).
+        """
         base = self.preprocessing_flags or PreprocessingFlags()
         data = base.model_dump()
+
+        mode = self.resolve_essay_mode()
+        if self.preprocessing_flags is None:
+            if mode == "exact":
+                data["remove_punctuation"] = False
+                data["convert_numbers"] = False
+                data["use_lemmatization"] = False
+                data["use_synonyms"] = False
+            elif mode in ("linguistic", "conceptual"):
+                data["clean_html"] = True
+                data["case_folding"] = True
+                data["expand_contractions"] = True
+                data["convert_numbers"] = True
+                data["remove_punctuation"] = True
+                data["preserve_years"] = True
+                data["remove_stopwords"] = True
+                data["use_lemmatization"] = True
+                data["use_synonyms"] = True
+
         for field in [
             "clean_html", "case_folding", "expand_contractions", "convert_numbers",
-            "remove_punctuation", "preserve_years", "remove_stopwords", "use_lemmatization"
+            "remove_punctuation", "preserve_years", "remove_stopwords", "use_lemmatization",
+            "use_synonyms"
         ]:
             val = getattr(self, field, None)
             if val is not None:
@@ -78,6 +150,7 @@ class GraderResponse(BaseModel):
     lsa_score: float = Field(..., description="Skor terbaik dari LSA terhadap semua kunci jawaban (0 - 100)")
     math_score: float = Field(0.0, description="Skor evaluasi matematis menggunakan SymPy (0 - 100)")
     matched_keywords: List[str] = Field(..., description="Kata kunci yang berhasil dicocokkan")
+    essay_mode: Optional[str] = Field(None, description="Mode esai yang aktif saat penilaian (linguistic / exact / conceptual)")
 
 
 class PosTagItem(BaseModel):

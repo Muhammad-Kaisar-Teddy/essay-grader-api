@@ -24,23 +24,25 @@ def parse_keywords(text: str) -> List[KeywordItem]:
         
     items = [k.strip() for k in text.split(';') if k.strip()]
     for item in items:
-        # Cek strict mode
-        is_strict = False
-        if item.startswith('**'):
-            is_strict = True
-            item = item[2:].strip()  # Hapus **
-
         if ':' in item:
             parts = item.split(':')
-            keyword = parts[0].strip()
+            raw_kw = parts[0].strip()
             try:
                 weight = float(parts[1].strip())
             except ValueError:
                 weight = 1.0
         else:
-            keyword = item
+            raw_kw = item
             weight = 1.0
-        
+
+        # Strict per-varian: pertahankan '**' pada varian jika ada pemisah '/'
+        is_strict = False
+        if '/' not in raw_kw and raw_kw.startswith('**'):
+            is_strict = True
+            keyword = raw_kw[2:].strip()
+        else:
+            keyword = raw_kw
+
         keywords_list.append(KeywordItem(keyword=keyword, weight=weight, strict=is_strict))
     
     return keywords_list

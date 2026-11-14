@@ -684,8 +684,502 @@ def test_preprocessing_flags_in_api_grading():
     assert res_nested["rule_based_score"] == 0.0
 
 
+# ---------------------------------------------------------------------------
+# Test 24: Ekspansi Sinonim Otomatis pada Rule-Based (ID & EN + Toggle Flag)
+# ---------------------------------------------------------------------------
+def test_synonym_expansion_rule_based():
+    # Guru hanya menulis keyword tunggal "mencemari" dan "konsumtif" tanpa garis miring '/'
+    # Siswa menulis sinonimnya: "mengotori" dan "boros"
+    payload = {
+        "student_answer": "Limbah pabrik mengotori sungai dan perilaku boros merugikan masyarakat.",
+        "reference_answers": [
+            "Limbah pabrik mencemari sungai dan perilaku konsumtif merugikan masyarakat."
+        ],
+        "keywords": [
+            {"keyword": "mencemari", "weight": 2.0},
+            {"keyword": "konsumtif", "weight": 2.0},
+        ],
+        "rule_weight": 0.7,
+        "lsa_weight": 0.3,
+    }
+
+    # 1. Default (use_synonyms=True): kedua keyword harus cocok via ekspansi sinonim otomatis
+    res_syn_on = client.post("/grade", json=payload).json()
+    assert res_syn_on["rule_based_score"] == 100.0
+    assert len(res_syn_on["matched_keywords"]) == 2
+
+    # 2. Jika use_synonyms=False: tidak boleh mencocokkan sinonim yang tidak ditulis eksplisit
+    res_syn_off = client.post("/grade", json={**payload, "use_synonyms": False}).json()
+    assert res_syn_off["rule_based_score"] == 0.0
+    assert len(res_syn_off["matched_keywords"]) == 0
 
 
+# ---------------------------------------------------------------------------
+# Test 25: Keamanan Strict Mode (**) dan Polysemy Guard pada Ekspansi Sinonim
+# ---------------------------------------------------------------------------
+def test_synonym_expansion_strict_and_polysemy_guard():
+    # Keyword strict=True TIDAK BOLEH diekspansi ke sinonim
+    payload_strict = {
+        "student_answer": "Gaya hidup boros harus dihindari.",
+        "reference_answers": ["Gaya hidup konsumtif harus dihindari."],
+        "keywords": [
+            {"keyword": "konsumtif", "weight": 1.0, "strict": True},
+        ],
+        "rule_weight": 1.0,
+        "lsa_weight": 0.0,
+    }
+    res_strict = client.post("/grade", json=payload_strict).json()
+    assert res_strict["rule_based_score"] == 0.0
 
+    # Kata ambigu/polisemi seperti "bunga" atau "bisa" tidak boleh diekspansi sembarangan
+    from nlp_pipeline.synonym_expander import get_synonyms
+    assert len(get_synonyms("bisa")) == 0
+    assert len(get_synonyms("bunga")) == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 26: Penyelarasan Token Kanonik (Canonical Token Alignment) pada LSA
+# ---------------------------------------------------------------------------
+def test_lsa_canonical_token_alignment():
+    # Siswa menggunakan kosakata sinonim penuh dari referensi guru
+    payload = {
+        "student_answer": "Binatang dan tanaman di rimba wajib dilindungi agar ekosistem tetap lestari.",
+        "reference_answers": [
+            "Hewan dan tumbuhan di hutan harus dijaga agar lingkungan tetap lestari."
+        ],
+        "keywords": [],
+        "rule_weight": 0.0,
+        "lsa_weight": 1.0,
+    }
+
+    res_aligned = client.post("/grade", json={**payload, "use_synonyms": True}).json()
+    res_unaligned = client.post("/grade", json={**payload, "use_synonyms": False}).json()
+
+    # Dengan Canonical Token Alignment, skor LSA harus jauh lebih tinggi dibanding tanpa alignment
+    assert res_aligned["lsa_score"] > res_unaligned["lsa_score"]
+    assert res_aligned["lsa_score"] >= 70.0
+
+
+# ---------------------------------------------------------------------------
+# Test 27: Keamanan Penalti Negasi pada LSA Canonical Token Alignment
+# ---------------------------------------------------------------------------
+def test_lsa_synonym_alignment_preserves_negation_penalty():
+    ref = ["Sampah plastik mencemari lingkungan laut dan merusak ekosistem."]
+
+    # Siswa A: positif menggunakan sinonim ("mengotori", "menghancurkan")
+    res_pos = client.post("/grade", json={
+        "student_answer": "Limbah plastik mengotori alam bahari dan menghancurkan ekosistem.",
+        "reference_answers": ref,
+        "keywords": [],
+        "rule_weight": 0.0,
+        "lsa_weight": 1.0,
+    }).json()
+
+    # Siswa B: kalimat negasi menggunakan sinonim ("tidak mengotori", "tidak menghancurkan")
+    res_neg = client.post("/grade", json={
+        "student_answer": "Limbah plastik tidak mengotori alam bahari dan tidak menghancurkan ekosistem.",
+        "reference_answers": ref,
+        "keywords": [],
+        "rule_weight": 0.0,
+        "lsa_weight": 1.0,
+    }).json()
+
+    # Skor kalimat bernegasi harus tetap dipotong oleh negation penalty
+    assert res_neg["lsa_score"] < res_pos["lsa_score"]
+
+
+# ---------------------------------------------------------------------------
+# Test 28: Pelindung Kata Dasar Bahasa Indonesia Berakhiran '-s' (Language-Aware)
+# ---------------------------------------------------------------------------
+def test_language_aware_lemmatization_preserves_id_root_words():
+    from nlp_pipeline.preprocessing import preprocess_text, _normalize_word
+
+    # Kata dasar Bahasa Indonesia berakhiran '-s' tidak boleh dipotong oleh spaCy EN
+    for word in ["boros", "kardus", "pedas", "gelas", "panas"]:
+        assert _normalize_word(word) == word
+        assert preprocess_text(word) == word
+
+    # Dalam kalimat Bahasa Indonesia penuh
+    assert "boros" in preprocess_text("Perilaku boros dan membeli kardus itu sangat merugikan.").split()
+    # Dalam kalimat campuran (code-mixing), kata EN tetap terlemmatize
+    assert "run" in preprocess_text("Siswa sedang running aplikasi baru.").split()
+
+
+# ---------------------------------------------------------------------------
+# Test 29: Perbaikan Strict Mode (Boundary Tanda Baca Ujung & HTML/Kutip Lengkung)
+# ---------------------------------------------------------------------------
+def test_strict_punctuation_boundaries_and_html_quotes():
+    # 1. Kendala 1: Tanda baca di akhir/awal varian harus tetap menjaga batas kata di sisi satunya
+    payload_boundary = {
+        "reference_answers": ["Ada sungai, dan, hutan."],
+        "keywords": [
+            {"keyword": "dan,", "weight": 1.0, "strict": True},
+            {"keyword": '"Halo', "weight": 1.0, "strict": True},
+        ],
+        "rule_weight": 1.0,
+        "lsa_weight": 0.0,
+    }
+    # "badan," dan '"Halogen' TIDAK BOLEH false positive!
+    r_false = client.post("/grade", json={
+        **payload_boundary,
+        "student_answer": 'Dia berkata "Halogen tidak bagus untuk badan, ya.'
+    }).json()
+    assert r_false["rule_based_score"] == 0.0
+
+    # Jawaban presisi harus cocok keduanya
+    r_true = client.post("/grade", json={
+        **payload_boundary,
+        "student_answer": 'Dia berkata "Halo di sungai, dan, hutan.'
+    }).json()
+    assert r_true["rule_based_score"] == 100.0
+
+    # 2. Kendala 2: HTML tag terputus & kutip tipografi lengkung (“ ”) harus tetap cocok
+    payload_html_quote = {
+        "reference_answers": ['Ibu kota adalah Jakarta, katanya "Halo,"'],
+        "keywords": [
+            {"keyword": "Jakarta,", "weight": 1.0, "strict": True},
+            {"keyword": '"Halo,"', "weight": 1.0, "strict": True},
+        ],
+        "rule_weight": 1.0,
+        "lsa_weight": 0.0,
+    }
+    r_html_quote = client.post("/grade", json={
+        **payload_html_quote,
+        "student_answer": "<p>Ibu kota adalah <b>Jakarta</b>, katanya “Halo,” pelan.</p>"
+    }).json()
+    assert r_html_quote["rule_based_score"] == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Test 30: Strict Per-Varian ('**' hanya mengikat 1 varian di kanannya di dalam '/')
+# ---------------------------------------------------------------------------
+def test_strict_per_variant_slash_isolation():
+    from evaluate_model import parse_keywords
+
+    # Pilar campuran: **Jakarta strict, tetapi "ibukota" di pilar yang sama tetap non-strict
+    parsed = parse_keywords("**Jakarta / ibukota : 2.0; **Pancasila / dasar negara : 1.0")
+    assert len(parsed) == 2
+    assert parsed[0].strict is False  # Per-varian ditangani oleh rule_based.py
+
+    # 1. Siswa menulis "jakarta" (huruf kecil) dan "dasar negara" (huruf kecil) ->
+    #    **Jakarta GAGAL, ibukota tidak ada; **Pancasila gagal, tetapi "dasar negara" (non-strict) COCOK!
+    res_partial = client.post("/grade", json={
+        "student_answer": "Ibu kota negara itu jakarta dengan dasar negara yang kuat.",
+        "reference_answers": ["Ibu kota negara adalah Jakarta dengan Pancasila sebagai dasar negara."],
+        "keywords": [k.model_dump() for k in parsed],
+        "rule_weight": 1.0,
+        "lsa_weight": 0.0,
+    }).json()
+    assert res_partial["rule_based_score"] == 33.33  # hanya bobot 1.0 dari total 3.0
+
+    # 2. Siswa menulis "IBUKOTA" (non-strict di pilar yang diawali **Jakarta!) dan "Pancasila" -> Keduanya COCOK!
+    res_full = client.post("/grade", json={
+        "student_answer": "IBUKOTA negara itu menggunakan Pancasila.",
+        "reference_answers": ["Ibu kota negara adalah Jakarta dengan Pancasila."],
+        "keywords": [k.model_dump() for k in parsed],
+        "rule_weight": 1.0,
+        "lsa_weight": 0.0,
+    }).json()
+    assert res_full["rule_based_score"] == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Test 31: Proteksi Stopword pada Kata Kunci Non-Strict & Kurasi SEMANTIC_GUARD_WORDS
+# ---------------------------------------------------------------------------
+def test_non_strict_keyword_stopword_protection():
+    # 1. "deskripsi umum" tanpa '**' tidak boleh terpotong jadi "deskripsi" saja
+    payload_umum = {
+        "reference_answers": ["Paragraf pertama berisi deskripsi umum."],
+        "keywords": [
+            {"keyword": "deskripsi umum", "weight": 1.0, "strict": False},
+        ],
+        "rule_weight": 1.0,
+        "lsa_weight": 0.0,
+    }
+    # Siswa menulis berbagai variasi kapitalisasi -> harus selalu COCOK
+    for variant_ans in ["DESKRIPSI UMUM", "Deskripsi Umum", "deskripsi umum", "DeSkRiPsI uMuM"]:
+        res_ok = client.post("/grade", json={**payload_umum, "student_answer": variant_ans}).json()
+        assert res_ok["rule_based_score"] == 100.0, f"Gagal pada variasi: {variant_ans}"
+
+    # Siswa menulis "deskripsi bagian" -> TIDAK BOLEH cocok dengan "deskripsi umum"!
+    res_diff = client.post("/grade", json={
+        **payload_umum,
+        "student_answer": "Paragraf kedua berisi deskripsi bagian."
+    }).json()
+    assert res_diff["rule_based_score"] == 0.0
+
+    # 2. Frasa kunci yang mengandung stopword murni ("di atas") tetap terlindungi
+    payload_prep = {
+        "reference_answers": ["Buku berada di atas meja."],
+        "keywords": [
+            {"keyword": "di atas", "weight": 1.0, "strict": False},
+        ],
+        "rule_weight": 1.0,
+        "lsa_weight": 0.0,
+    }
+    res_prep_ok = client.post("/grade", json={
+        **payload_prep,
+        "student_answer": "Buku itu terletak DI ATAS meja."
+    }).json()
+    assert res_prep_ok["rule_based_score"] == 100.0
+
+    res_prep_fail = client.post("/grade", json={
+        **payload_prep,
+        "student_answer": "Buku itu terletak di bawah meja."
+    }).json()
+    assert res_prep_fail["rule_based_score"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Test 32: Pra-Ekstraksi Koordinat Matematis (Q, P) dan (P, Q) pada SymPy
+# ---------------------------------------------------------------------------
+def test_math_coordinate_pairs_and_reversed_order():
+    base_3c = {
+        "reference_answers": ["Eq (Q:P): Eq (15:30000)"],
+        "keywords": [],
+        "math_steps": [
+            {"equation": "P = 30000", "weight": 2.5},
+            {"equation": "Q = 15", "weight": 2.5},
+        ],
+        "rule_weight": 0.0,
+        "lsa_weight": 0.0,
+        "math_weight": 1.0,
+    }
+
+    # 1. Kasus Elsinta: `eq (15 ; 30.000)` -> konvensi (Q, P)
+    r_elsinta = client.post("/grade", json={**base_3c, "student_answer": "eq (15 ; 30.000)"}).json()
+    assert r_elsinta["math_score"] == 100.0
+
+    # 2. Koordinat standalone tanpa awalan `eq`: `(15, 30.000)`
+    r_standalone = client.post("/grade", json={**base_3c, "student_answer": "(15, 30.000)"}).json()
+    assert r_standalone["math_score"] == 100.0
+
+    # 3. Kasus Achmad dengan label sumbu eksplisit `(P, Q) = (30.000, 15)`
+    r_pq_labeled = client.post("/grade", json={
+        **base_3c,
+        "student_answer": "c. (P, Q) = (30.000, 15)"
+    }).json()
+    assert r_pq_labeled["math_score"] == 100.0
+
+    # 4. Kasus Nadira tanpa label `(P, Q)`: `(c) Eq (30.000 ; 15)` -> terbalik, tidak boleh lolos
+    r_reversed = client.post("/grade", json={
+        **base_3c,
+        "student_answer": "(c) Eq (30.000 ; 15)"
+    }).json()
+    assert r_reversed["math_score"] == 0.0
+
+    # 5. Kasus desimal koma Indonesia Soal 4a: `Titik Keseimbangan E (7,5 ; 4,5)`
+    r_4a = client.post("/grade", json={
+        "student_answer": "Titik Keseimbangan E (7,5 ; 4,5)",
+        "reference_answers": ["Titik keseimbangan : E = (Q=7,5 ; P=4,5)"],
+        "keywords": [],
+        "math_steps": [
+            {"equation": "Q = 7.5", "weight": 5.0},
+            {"equation": "P = 4.5", "weight": 5.0},
+        ],
+        "rule_weight": 0.0,
+        "lsa_weight": 0.0,
+        "math_weight": 1.0,
+    }).json()
+    assert r_4a["math_score"] == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Test 33: Ekstraksi Frasa Verbal Code-Switching & Auto-Discovery Label Variabel
+# ---------------------------------------------------------------------------
+def test_math_verbal_codeswitching_and_dynamic_labels():
+    base_3c = {
+        "reference_answers": ["P = 30000, Q = 15"],
+        "keywords": [],
+        "math_steps": [
+            {"equation": "P = 30000", "weight": 2.5},
+            {"equation": "Q = 15", "weight": 2.5},
+        ],
+        "rule_weight": 0.0,
+        "lsa_weight": 0.0,
+        "math_weight": 1.0,
+    }
+
+    # 1. Kasus Khalefa: `c) equilibrium is at the price Rp. 30.000 with quantity of 15.`
+    r_khalefa = client.post("/grade", json={
+        **base_3c,
+        "student_answer": "c) equilibrium is at the price Rp. 30.000 with quantity of 15."
+    }).json()
+    assert r_khalefa["math_score"] == 100.0
+
+    # 2. Frasa verbal Bahasa Indonesia + unit
+    r_id_verbal = client.post("/grade", json={
+        **base_3c,
+        "student_answer": "Jadi harga sebesar Rp 30.000 dengan kuantitas 15 unit."
+    }).json()
+    assert r_id_verbal["math_score"] == 100.0
+
+    # 3. Auto-discovery lintas mata pelajaran (Fisika: v & t dari kunci jawaban guru)
+    r_physics = client.post("/grade", json={
+        "student_answer": "Hasil perhitungannya adalah kelajuan 20 dengan durasi 5.",
+        "reference_answers": ["Diketahui Kelajuan (v) adalah 20 dan Durasi (t) adalah 5."],
+        "keywords": [],
+        "math_steps": [
+            {"equation": "v = 20", "weight": 1.0},
+            {"equation": "t = 5", "weight": 1.0},
+        ],
+        "rule_weight": 0.0,
+        "lsa_weight": 0.0,
+        "math_weight": 1.0,
+    }).json()
+    assert r_physics["math_score"] == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Test 34: Persamaan Berantai (=), Mata Uang Rp, dan Alias Pe/Qe pada SymPy
+# ---------------------------------------------------------------------------
+def test_math_currency_chained_eq_and_equilibrium_aliases():
+    base_3c = {
+        "reference_answers": ["P = 30000, Q = 15"],
+        "keywords": [],
+        "math_steps": [
+            {"equation": "P = 30000", "weight": 2.5},
+            {"equation": "Q = 15", "weight": 2.5},
+        ],
+        "rule_weight": 0.0,
+        "lsa_weight": 0.0,
+        "math_weight": 1.0,
+    }
+
+    # 1. Dua penugasan variabel dalam satu baris + alias Pe/Qe (Kasus Desta)
+    r_desta = client.post("/grade", json={
+        **base_3c,
+        "student_answer": "c) Pe = 30.000 with the Qe = 15"
+    }).json()
+    assert r_desta["math_score"] == 100.0
+
+    # 2. Satuan Rp sebelum angka + persamaan berantai `Q = -60.000 / -4.000 = 15`
+    r_chained = client.post("/grade", json={
+        **base_3c,
+        "student_answer": "c. P = Rp 30.000\nQ = -60.000 / -4.000 = 15"
+    }).json()
+    assert r_chained["math_score"] == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Test 35: Isolasi Garis Miring ('/') & Auto Switch Flag remove_punctuation=False
+# ---------------------------------------------------------------------------
+def test_math_slash_isolation_and_auto_punctuation_switch():
+    from schemas import EssayRequest
+    from evaluate_model import parse_math_steps, parse_keywords
+
+    # 1. Parser memisahkan math_steps vs keywords tanpa merusak pembagian '/'
+    steps = parse_math_steps("(P - 12000)/4000 = (Q - 4000)/-2000 : 2; Qd = 10000 - 0.5*P : 18")
+    assert len(steps) == 2
+    assert steps[0].equation == "(P - 12000)/4000 = (Q - 4000)/-2000"
+    assert steps[0].weight == 2.0
+
+    kws = parse_keywords("kewajiban / tanggung jawab : 2.0")
+    assert len(kws) == 1 and kws[0].keyword == "kewajiban / tanggung jawab"
+
+    # 2. Auto switch flag remove_punctuation=False pada soal berkategori hitungan
+    math_req = EssayRequest(
+        student_answer="(P - 12.000)/4.000 = (Q - 4.000)/-2.000\nQd = 10.000 - 0,5P",
+        reference_answers=["(P - 12000)/4000 = (Q - 4000)/-2000"],
+        math_steps=steps,
+        math_weight=1.0,
+        rule_weight=0.0,
+        lsa_weight=0.0,
+    )
+    assert math_req.get_preprocessing_flags().remove_punctuation is False
+
+    # Tetapi jika eksplisit di-override user ke True, tetap dihormati
+    math_req_override = EssayRequest(
+        student_answer="Qd = 10000 - 0.5P",
+        reference_answers=["Qd = 10000 - 0.5P"],
+        math_steps=steps,
+        math_weight=1.0,
+        remove_punctuation=True,
+    )
+    assert math_req_override.get_preprocessing_flags().remove_punctuation is True
+
+    # Evaluasi API penuh dengan pembagian '/' menghasilkan math_score = 100.0
+    res_api = client.post("/grade", json={
+        "student_answer": "(P - 12.000)/4.000 = (Q - 4.000)/-2.000\nQd = 10.000 - 0,5P",
+        "reference_answers": ["(P - 12000)/4000 = (Q - 4000)/-2000"],
+        "math_steps": [s.model_dump() for s in steps],
+        "math_weight": 1.0,
+        "rule_weight": 0.0,
+        "lsa_weight": 0.0,
+    }).json()
+    assert res_api["math_score"] == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Test 36: Auto-Trigger Mode (linguistic, exact, conceptual) dari Subject CBT
+# ---------------------------------------------------------------------------
+def test_subject_and_essay_mode_auto_triggers():
+    from schemas import EssayRequest, MathStepItem
+
+    # 1. Trigger Linguistic dari format dropdown CBT ("Bahasa Indonesia (XI)", "Bahasa Inggris (X)")
+    req_bindo = EssayRequest(
+        subject="Bahasa Indonesia (XI)",
+        student_answer="Tumbuhan melakukan fotosintesis",
+        reference_answers=["Tumbuhan melakukan fotosintesis"],
+    )
+    assert req_bindo.resolve_essay_mode() == "linguistic"
+    flags_bindo = req_bindo.get_preprocessing_flags()
+    assert flags_bindo.use_lemmatization is True
+    assert flags_bindo.use_synonyms is True
+    assert flags_bindo.convert_numbers is True
+    assert flags_bindo.remove_punctuation is True
+
+    # 2. Trigger Exact dari nama mapel ("Matematika Peminatan (XII)", "Fisika (X)")
+    req_math_subj = EssayRequest(
+        subject="Matematika Peminatan (XII)",
+        student_answer="Q = 100 - 2P",
+        reference_answers=["Q = 100 - 2P"],
+    )
+    assert req_math_subj.resolve_essay_mode() == "exact"
+    flags_math = req_math_subj.get_preprocessing_flags()
+    assert flags_math.remove_punctuation is False
+    assert flags_math.convert_numbers is False
+    assert flags_math.use_lemmatization is False
+    assert flags_math.use_synonyms is False
+
+    # 3. Trigger Conceptual dari nama mapel ("Informatika (XI)", "Sejarah Indonesia (X)")
+    req_info = EssayRequest(
+        subject="Informatika (XI)",
+        student_answer="Algoritma adalah urutan langkah logis",
+        reference_answers=["Algoritma merupakan langkah penyelesaian masalah"],
+    )
+    assert req_info.resolve_essay_mode() == "conceptual"
+    flags_info = req_info.get_preprocessing_flags()
+    assert flags_info.use_lemmatization is True
+    assert flags_info.use_synonyms is True
+    assert flags_info.preserve_years is True
+
+    # 4. Smart Hybrid Trigger pada Ekonomi:
+    #    - Tanpa math_steps -> conceptual
+    #    - Dengan math_steps -> otomatis berubah menjadi exact
+    req_econ_theory = EssayRequest(
+        subject="Ekonomi (XI)",
+        student_answer="Inflasi adalah kenaikan harga barang secara umum",
+        reference_answers=["Inflasi adalah kenaikan harga secara umum dan terus-menerus"],
+    )
+    assert req_econ_theory.resolve_essay_mode() == "conceptual"
+
+    req_econ_math = EssayRequest(
+        subject="Ekonomi (XI)",
+        student_answer="Q = 15 dan P = 30000",
+        reference_answers=["Q = 15, P = 30000"],
+        math_steps=[MathStepItem(equation="Q = 15", weight=1.0)],
+        math_weight=1.0,
+    )
+    assert req_econ_math.resolve_essay_mode() == "exact"
+
+    # 5. Verifikasi response endpoint /grade menyertakan essay_mode yang aktif
+    res_api = client.post("/grade", json={
+        "subject": "Bahasa Inggris (X)",
+        "student_answer": "Plants produce food using sunlight.",
+        "reference_answers": ["Plants make food using sunlight."],
+        "keywords": [{"keyword": "produce", "weight": 1.0}],
+    }).json()
+    assert res_api["essay_mode"] == "linguistic"
 
 

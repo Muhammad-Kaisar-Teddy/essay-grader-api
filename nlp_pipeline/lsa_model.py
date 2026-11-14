@@ -2,6 +2,7 @@ from typing import List, Set, Optional, Any
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from nlp_pipeline.preprocessing import preprocess_text, NEGATION_WORDS
+from nlp_pipeline.synonym_expander import align_tokens_for_lsa
 
 # ---------------------------------------------------------------------------
 # Kata negasi aktif: jika ditemukan di jawaban siswa tapi TIDAK di referensi,
@@ -29,12 +30,14 @@ def calculate_lsa_score(
     if not processed_student:
         return 0.0
 
+    use_synonyms = getattr(flags, "use_synonyms", True) if flags is not None else True
+
     best_score = 0.0
     for ref in reference_answers:
         processed_ref = preprocess_text(ref, convert_numbers=convert_numbers, flags=flags)
         if not processed_ref:
             continue
-        score = _compute_similarity(processed_student, processed_ref)
+        score = _compute_similarity(processed_student, processed_ref, use_synonyms=use_synonyms)
         if score > best_score:
             best_score = score
 
@@ -71,11 +74,17 @@ def _negation_penalty_factor(processed_student: str, processed_ref: str) -> floa
     return 1.0 - penalty
 
 
-def _compute_similarity(processed_student: str, processed_ref: str) -> float:
+def _compute_similarity(
+    processed_student: str,
+    processed_ref: str,
+    use_synonyms: bool = True
+) -> float:
     """
     Menghitung kemiripan semantik antara dua teks yang sudah di-preprocess.
 
     Menggunakan:
+    - Canonical Token Alignment (opsional via use_synonyms): menyelaraskan token
+      sinonim pada jawaban siswa ke token kanonik pada kunci jawaban referensi
     - TF-IDF dengan N-gram (1,2): bigram menangkap konteks negasi
       (contoh: "tidak naik" menjadi token tersendiri, berbeda dari "naik")
     - Cosine Similarity di ruang TF-IDF (lebih stabil dari SVD untuk 2 dokumen pendek)
@@ -84,7 +93,14 @@ def _compute_similarity(processed_student: str, processed_ref: str) -> float:
     # 1. Hitung negation penalty terlebih dahulu (sebelum vektorisasi)
     neg_factor = _negation_penalty_factor(processed_student, processed_ref)
 
-    documents = [processed_ref, processed_student]
+    # 1b. Penyelarasan token kanonik berbasis synset untuk mengatasi Vocabulary Mismatch
+    aligned_student = (
+        align_tokens_for_lsa(processed_student, processed_ref)
+        if use_synonyms
+        else processed_student
+    )
+
+    documents = [processed_ref, aligned_student]
 
     # 2. TF-IDF dengan N-gram (1,2) untuk menangkap bigram negasi
     vectorizer = TfidfVectorizer(ngram_range=(1, 2))

@@ -37,12 +37,13 @@ python evaluate_model.py [OPSI...]
 | `--limit` | `int` | `None` (Semua) | Membatasi jumlah file siswa untuk pengujian cepat (misal: `--limit 5` untuk 5 siswa pertama). |
 | `--output-dir` | `str` | `test_set/test_result` | Direktori tempat menyimpan file laporan evaluasi (otomatis diabaikan oleh `.gitignore`). |
 | `--ignore-auto-status` | *flag* | `False` | Mengabaikan kolom `auto_grading_status` dan memaksa seluruh butir soal dinilai murni oleh model AI. |
+| `--mode` | `str` | `None` (Auto) | Memaksa mode esai tertentu (`linguistic`, `exact`, `conceptual`). Jika kosong, otomatis ditentukan dari `subject` dan `math_steps`. |
 
 ---
 
 ### B. Feature Flags: Uji Coba Preprocessing (Ablation Study)
 
-Secara default, seluruh tahapan preprocessing aktif. Anda dapat menonaktifkan fitur tertentu untuk keperluan analisis ablasi atau eksperimen akurasi:
+Secara default, tahapan preprocessing menyesuaikan **Mode Esai** (`linguistic`, `exact`, `conceptual`). Anda tetap dapat menonaktifkan fitur tertentu secara eksplisit untuk keperluan analisis ablasi:
 
 | Flag Preprocessing | Efek Saat Ditambahkan |
 | :--- | :--- |
@@ -54,6 +55,7 @@ Secara default, seluruh tahapan preprocessing aktif. Anda dapat menonaktifkan fi
 | `--no-html` | **Mematikan sanitasi tag HTML** dan normalisasi jeda baris. |
 | `--no-years` | **Mematikan preservasi angka tahun** (rentang 1000–2099). |
 | `--no-contractions` | **Mematikan ekspansi singkatan** bahasa Inggris (*don't* $\rightarrow$ *do not*). |
+| `--no-synonyms` | **Mematikan ekspansi sinonim otomatis** (WordNet / Tesaurus Bilingual). |
 
 ---
 
