@@ -24,8 +24,9 @@ COPY --chown=user:user . .
 
 USER user
 
-# Membuka port 7860 (Port wajib untuk Hugging Face Spaces)
+# Membuka port 7860 dan port default Render
 EXPOSE 7860
 
-# Menjalankan Gunicorn dengan 4 worker Uvicorn di port 7860
-CMD ["gunicorn", "main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:7860"]
+# Menjalankan Gunicorn dengan 2 worker (hemat RAM agar fit di 512MB Render)
+# Menggunakan ${PORT:-7860} agar otomatis menyesuaikan port Render ($PORT) maupun default (7860)
+CMD ["sh", "-c", "gunicorn main:app --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-7860}"]
