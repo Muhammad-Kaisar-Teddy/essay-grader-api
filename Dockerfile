@@ -24,9 +24,8 @@ COPY --chown=user:user . .
 
 USER user
 
-# Membuka port 7860 dan port default Render
-EXPOSE 7860
+# Membuka port 10000 (Port standar Render Web Service)
+EXPOSE 10000
 
-# Menjalankan Gunicorn dengan 2 worker (hemat RAM agar fit di 512MB Render)
-# Menggunakan ${PORT:-7860} agar otomatis menyesuaikan port Render ($PORT) maupun default (7860)
-CMD ["sh", "-c", "gunicorn main:app --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-7860}"]
+# Menjalankan Uvicorn langsung (1 worker super ringan ~200MB RAM, bebas OOM dan responsif di Render Free Tier)
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}"]
