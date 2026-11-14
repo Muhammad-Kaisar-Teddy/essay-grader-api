@@ -1,25 +1,31 @@
-# Gunakan image Python ringan
+# Gunakan image Python 3.12 slim
 FROM python:3.12-slim
+
+# Variabel lingkungan untuk Python dan path NLTK global
+ENV PYTHONUNBUFFERED=1 \
+    NLTK_DATA=/usr/share/nltk_data
 
 # Mengatur direktori kerja di dalam kontainer
 WORKDIR /app
 
-# Menyalin file daftar pustaka (requirements)
+# Menyalin dan menginstal dependensi
 COPY requirements.txt .
-
-# Menginstal pustaka Python (tanpa menyimpan cache agar ukuran file kecil)
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Menyalin seluruh kode kita ke dalam kontainer
-COPY . .
+# Mengunduh korpus NLTK ke direktori publik (/usr/share/nltk_data) agar bisa diakses semua user
+RUN python -c "import nltk; nltk.download('stopwords', download_dir='/usr/share/nltk_data'); nltk.download('wordnet', download_dir='/usr/share/nltk_data'); nltk.download('omw-1.4', download_dir='/usr/share/nltk_data')"
 
-# MENGUNDUH DATA NLP (NLTK) SAAT PROSES BUILD
-# Agar saat server menyala pertama kali, ia tidak perlu membuang waktu untuk mengunduh corpus bahasa
-RUN python -c "import nltk; nltk.download('stopwords'); nltk.download('wordnet'); nltk.download('omw-1.4')"
+# Membuat user standar UID 1000 (Standar keamanan Hugging Face Spaces)
+RUN useradd -m -u 1000 user && \
+    chown -R user:user /app
 
-# Membuka port 8000 (Standar yang sering digunakan)
-EXPOSE 8000
+# Menyalin seluruh kode dengan hak kepemilikan user 1000
+COPY --chown=user:user . .
 
-# Perintah yang dijalankan saat server dinyalakan
-# Menggunakan Gunicorn (Server Produksi) dipasangkan dengan pekerja Uvicorn (FastAPI)
-CMD ["gunicorn", "main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
+USER user
+
+# Membuka port 7860 (Port wajib untuk Hugging Face Spaces)
+EXPOSE 7860
+
+# Menjalankan Gunicorn dengan 4 worker Uvicorn di port 7860
+CMD ["gunicorn", "main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:7860"]
