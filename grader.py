@@ -24,19 +24,23 @@ def grade_essay(request: EssayRequest) -> GraderResponse:
 
 
     # 0. Normalisasi HTML dan jeda baris (Enter / Shift + Enter jika clean_html aktif)
+    # Setelah dibersihkan sekali di sini, matikan clean_html pada inner_flags agar entitas
+    # seperti &lt;b&gt; yang sudah di-unescape menjadi <b> tidak ikut terhapus pada putaran kedua.
     if flags.clean_html:
         clean_student_answer = clean_html_and_newlines(request.student_answer)
         clean_reference_answers = [clean_html_and_newlines(ref) for ref in request.reference_answers]
+        inner_flags = flags.model_copy(update={"clean_html": False})
     else:
         clean_student_answer = request.student_answer
         clean_reference_answers = request.reference_answers
+        inner_flags = flags
 
     # 1. Rule-based dengan bobot dinamis dan feature flags
     rule_score, matched = calculate_rule_based_score(
         clean_student_answer,
         request.keywords,
         request.required_keywords_count,
-        flags=flags
+        flags=inner_flags
     )
     
     # 2. Evaluasi Matematis (jika ada math_steps), bawa konteks referensi & keywords
@@ -63,7 +67,7 @@ def grade_essay(request: EssayRequest) -> GraderResponse:
         lsa_score = calculate_lsa_score(
             clean_student_answer,
             clean_reference_answers,
-            flags=flags
+            flags=inner_flags
         )
 
         

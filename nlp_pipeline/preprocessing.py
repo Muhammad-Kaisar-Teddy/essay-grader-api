@@ -17,7 +17,6 @@ except ImportError:
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 import nltk
 from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
 from num2words import num2words
 
 # Import bilingual NLP models: nlp-id (Indonesian) & spaCy (English)
@@ -61,7 +60,6 @@ for _resource, _pkg in [
 # ---------------------------------------------------------------------------
 _factory = StemmerFactory()
 _sastrawi = _factory.create_stemmer()
-_wordnet_lemmatizer = WordNetLemmatizer()
 
 # Lemmatizer dan POS Tagger Bahasa Indonesia (nlp-id, berbasis kamus resmi KBBI)
 _id_lemmatizer = IdLemmatizer()
@@ -132,17 +130,20 @@ def _is_known_english_word(word: str) -> bool:
     return word in _en_nlp.vocab.strings or word.lower() in _en_nlp.vocab.strings
 
 
+_NUMERIC_STR_RE = re.compile(r'^\d+(?:\.\d+)?$')
+
+
 @lru_cache(maxsize=20000)
 def _normalize_word(word: str, lang: Optional[str] = None) -> str:
     """
     Menormalisasi satu kata menggunakan Lemmatizer Bilingual yang sadar bahasa (language-aware):
-    1. Negasi, kata bilangan, dan digit dikembalikan apa adanya.
+    1. Negasi, kata bilangan, dan digit/desimal dikembalikan apa adanya.
     2. Jika `lang == 'en'`: prioritaskan spaCy EN, dan hanya fallback ke `nlp-id` jika ada kata
        sisipan ID (tanpa memanggil Sastrawi pada kata bahasa Inggris).
     3. Jika `lang == 'id'` atau `lang is None`: prioritaskan `nlp-id`, lindungi kata dasar baku KBBI (`root_word`),
        lalu gunakan spaCy untuk kata bahasa Inggris/code-mixing (tanpa memanggil Sastrawi pada kata Inggris).
     """
-    if word in NEGATION_WORDS or word in NUMBER_WORDS or word.isdigit():
+    if word in NEGATION_WORDS or word in NUMBER_WORDS or word.isdigit() or _NUMERIC_STR_RE.match(word):
         return word
 
     if lang == "en":
@@ -186,6 +187,19 @@ def _normalize_word(word: str, lang: Optional[str] = None) -> str:
     return word
 
 
+# Hanya tag HTML yang DIKENAL yang dihapus; atribut harus berbentuk key=value.
+# Jadi "<b dan c>" (teks siswa) TIDAK dianggap tag, sedangkan <a href="x"> tetap.
+_KNOWN_TAGS = (
+    r"(?:a|abbr|b|blockquote|br|code|div|em|font|h[1-6]|hr|i|img|li|mark|"
+    r"ol|p|pre|s|small|span|strike|strong|sub|sup|table|tbody|td|th|"
+    r"thead|tr|u|ul)"
+)
+_ATTRS = r"(?:\s+[A-Za-z_:][\w:.\-]*\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s\"'<>=]+))*"
+_TAG_RE = re.compile(r"</?" + _KNOWN_TAGS + r"\b" + _ATTRS + r"\s*/?>", re.I)
+_BR_RE = re.compile(r"<br\b" + _ATTRS + r"\s*/?>", re.I)
+_BLOCK_CLOSE_RE = re.compile(r"</(?:p|div|li|tr|h[1-6]|blockquote)\s*>", re.I)
+
+
 def clean_html_and_newlines(text: str) -> str:
     """
     Membersihkan tag HTML dan menormalisasi jeda baris (Enter / Shift + Enter).
@@ -194,7 +208,8 @@ def clean_html_and_newlines(text: str) -> str:
        - Shift + Enter di web editor menghasilkan <br> atau <br/>.
        - Enter di web editor menghasilkan blok baru seperti <p>...</p> atau <div>...</div>.
     2. Menangani karakter newline mentah (\\r\\n, \\r, unicode line/paragraph separator \\u2028, \\u2029).
-    3. Menghapus komentar HTML dan tag HTML lainnya (misal: <b>, <i>, <span>).
+    3. Menghapus komentar HTML dan tag HTML yang dikenal saja (misal: <b>, <i>, <span>),
+       sehingga simbol '<' dan '>' pada ekspresi matematika/informatika (misal: a<b dan c>d) tetap aman.
     4. Decode HTML entities (misal: &nbsp; menjadi spasi, &lt; menjadi <, &gt; menjadi >, dsb.).
     5. Merapikan spasi dan baris kosong berlebih.
     """
@@ -206,15 +221,14 @@ def clean_html_and_newlines(text: str) -> str:
     text = text.replace('\u2028', '\n').replace('\u2029', '\n')
 
     # 2. Shift + Enter: <br>, <br/>, <br /> -> \n
-    text = re.sub(r'(?i)<br\s*/?>', '\n', text)
+    text = _BR_RE.sub('\n', text)
 
-    # 3. Enter (blok paragraf/div/list/heading/table row) -> \n
-    text = re.sub(r'(?i)</(p|div|li|tr|h[1-6]|blockquote)>', '\n', text)
-    text = re.sub(r'(?i)<(p|div|li|tr|h[1-6]|blockquote)[^>]*>', '', text)
+    # 3. Enter (blok penutup paragraf/div/list/heading/table row) -> \n
+    text = _BLOCK_CLOSE_RE.sub('\n', text)
 
-    # 4. Hapus komentar HTML dan tag HTML lainnya (misal: <b>, <i>, <span>, <td>, dll)
+    # 4. Hapus komentar HTML dan tag HTML yang dikenal (buka/inline/tutup)
     text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
-    text = re.sub(r'</?[a-zA-Z][a-zA-Z0-9]*\b[^>]*\/?>', '', text)
+    text = _TAG_RE.sub('', text)
 
     # 5. Decode HTML entities (&nbsp; -> space, &lt; -> <, &gt; -> >, dll)
     text = html.unescape(text)
@@ -222,7 +236,7 @@ def clean_html_and_newlines(text: str) -> str:
 
     # 6. Bersihkan spasi horizontal berlebih di tiap baris dan rapikan \n
     lines = [re.sub(r'[ \t]+', ' ', line).strip() for line in text.split('\n')]
-    
+
     cleaned_lines = []
     prev_empty = False
     for line in lines:
@@ -399,6 +413,11 @@ def detect_language(text: str) -> str:
 
 
 
+# Angka utuh = tidak menempel huruf/angka lain, dan titik/koma di belakangnya
+# hanya boleh jika BUKAN pemisah desimal/ribuan (tidak diikuti digit).
+_INT_RE = re.compile(r'(?<![\w.,])(\d+)(?!\w|[.,]\d)')
+
+
 def convert_numbers_to_words(text: str, max_val: int = 100, lang: Optional[str] = None) -> str:
     """
     Mengonversi bilangan bulat (0 s.d max_val, default 100) menjadi kata secara selektif.
@@ -406,6 +425,7 @@ def convert_numbers_to_words(text: str, max_val: int = 100, lang: Optional[str] 
     - Selektif: mengabaikan baris yang mengandung persamaan matematika ('='),
       mengabaikan angka desimal (misal: 0.5, 3.14), variabel aljabar (misal: 2x, P1),
       dan angka tahun/angka besar di atas max_val (misal: 1945, 2024).
+    - Tetap mengonversi angka di akhir kalimat/klausa yang diikuti tanda baca (misal: "ada 5.").
     """
     if not text:
         return ""
@@ -432,11 +452,66 @@ def convert_numbers_to_words(text: str, max_val: int = 100, lang: Optional[str] 
                 pass
             return val_str
 
-        # Hanya ganti bilangan bulat tersendiri (bukan desimal, bukan variabel aljabar)
-        converted_line = re.sub(r'(?<![\.\,\w])(\d+)(?![\.\,\w])', _num_repl, line)
+        converted_line = _INT_RE.sub(_num_repl, line)
         converted_lines.append(converted_line)
 
     return '\n'.join(converted_lines)
+
+
+def strip_punctuation(text: str) -> str:
+    """
+    Menghapus/mengganti tanda baca secara sadar-konteks:
+    - Apostrof (' dan `) dihapus tanpa spasi (rina's -> rinas).
+    - Titik (.) dan koma (,) di antara digit dipertahankan (0,5 / 3.14 / 30.000).
+    - Tanda baca lain (-, /, (, ), ,, ., dll.) diganti spasi agar kata tidak menyatu
+      (misal: 'kata-kata' -> 'kata kata', 'dan/atau' -> 'dan atau').
+    """
+    out = []
+    n = len(text)
+    for i, ch in enumerate(text):
+        if ch not in string.punctuation:
+            out.append(ch)
+        elif ch in ".," and 0 < i < n - 1 and text[i - 1].isdigit() and text[i + 1].isdigit():
+            out.append(ch)
+        elif ch in "'`":
+            continue
+        else:
+            out.append(" ")
+    return "".join(out)
+
+
+_NUM_TOKEN_RE = re.compile(r'\b\d+(?:[.,]\d+)*\b')
+_ID_THOUSANDS = re.compile(r'^\d{1,3}(?:\.\d{3})+$')   # 30.000 / 1.250.000
+_EN_THOUSANDS = re.compile(r'^\d{1,3}(?:,\d{3})+$')    # 30,000
+
+
+def normalize_numeric_token(tok: str) -> str:
+    """Menormalisasi format angka: 30.000 / 30,000 -> 30000; 0,5 -> 0.5; 3.14 -> 3.14."""
+    if _ID_THOUSANDS.match(tok):
+        return tok.replace('.', '')
+    if _EN_THOUSANDS.match(tok):
+        return tok.replace(',', '')
+    return tok.replace(',', '.')
+
+
+def filter_numbers(text: str, preserve_years: bool = True, max_val: int = 100) -> str:
+    """
+    Menyaring angka sisa setelah penghapusan tanda baca:
+    - Bilangan bulat kecil (<= max_val) yang belum jadi kata (misal convert_numbers=False) dibuang.
+    - Tahun 4-digit (1000-2099) dipertahankan hanya bila preserve_years=True.
+    - Angka desimal (0.5, 3.14), ribuan (30000), dan angka besar (> max_val, misal 250) dipertahankan.
+    """
+    def _repl(match):
+        tok = normalize_numeric_token(match.group(0))
+        if tok.isdigit():
+            v = int(tok)
+            if len(tok) == 4 and 1000 <= v <= 2099:
+                return tok if preserve_years else ""
+            if v <= max_val:
+                return ""
+        return tok
+
+    return _NUM_TOKEN_RE.sub(_repl, text)
 
 
 def preprocess_text(
@@ -529,27 +604,26 @@ def _preprocess_text_cached(
     if convert_numbers:
         text = convert_numbers_to_words(text, lang=detected_lang)
 
-    # 4. Hapus tanda baca
+    # 4. Hapus tanda baca & saring angka sisa
     if remove_punctuation:
-        text = text.translate(str.maketrans('', '', string.punctuation))
-
-    # 5. Hapus angka non-tahun (pertahankan angka tahun 4-digit rentang 1000 - 2099 jika preserve_years=True)
-    if preserve_years:
-        def _preserve_year(match):
-            val = match.group(0)
-            if len(val) == 4 and (val.startswith('1') or val.startswith('20')):
-                return val
-            return ""
-        text = re.sub(r'\b\d+\b', _preserve_year, text)
-    elif remove_punctuation:
-        text = re.sub(r'\b\d+\b', '', text)
+        text = strip_punctuation(text)
+        text = filter_numbers(text, preserve_years=preserve_years)
+    elif not preserve_years:
+        # Jika remove_punctuation=False namun preserve_years=False, tetap biarkan angka utuh
+        pass
 
     # 6. Tokenisasi & Stopword removal
     tokens = text.split()
     if remove_stopwords:
         tokens = [
             word for word in tokens
-            if word.isdigit() or word in NEGATION_WORDS or word in NUMBER_WORDS or word not in STOP_WORDS
+            if (
+                word.isdigit()
+                or _NUMERIC_STR_RE.match(word)
+                or word in NEGATION_WORDS
+                or word in NUMBER_WORDS
+                or word not in STOP_WORDS
+            )
         ]
 
     # 7. Normalisasi (Lemmatisasi bilingual sadar-bahasa)
