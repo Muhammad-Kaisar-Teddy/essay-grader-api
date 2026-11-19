@@ -305,16 +305,13 @@ def _is_guarded_token(token: str) -> bool:
 
 
 def _pos_compatible(query_pos: Optional[str], cluster_pos: str) -> bool:
-    """Periksa apakah POS tag kompatibel dengan kategori POS cluster."""
-    if not query_pos or cluster_pos == "ANY" or query_pos == "UNK":
+    if not query_pos or cluster_pos == "ANY" or query_pos in {"UNK", "X"}:
         return True
     if query_pos == cluster_pos:
         return True
-    # Dalam Bahasa Indonesia/Inggris, nomina deverbal (NN) dan verba (VB) atau adjektiva (JJ)
-    # setelah stemming Sastrawi sering memiliki bentuk dasar yang sama (misal: "cemar", "rusak", "untung").
-    # Namun kita cegah pencampuran ekstrem jika POS sangat spesifik.
-    return True
-
+    if (query_pos, cluster_pos) in {("NN", "VB"), ("VB", "NN")}:
+        return True
+    return False 
 
 def _get_wordnet_synonyms(norm_token: str, pos_tag: Optional[str] = None) -> Set[str]:
     """

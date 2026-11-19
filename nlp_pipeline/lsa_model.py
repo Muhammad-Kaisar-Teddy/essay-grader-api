@@ -1,8 +1,10 @@
+import warnings
 from typing import List, Set, Optional, Any
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from nlp_pipeline.preprocessing import preprocess_text, NEGATION_WORDS
 from nlp_pipeline.synonym_expander import align_tokens_for_lsa
+from sklearn.decomposition import TruncatedSVD
 
 # ---------------------------------------------------------------------------
 # Kata negasi aktif: jika ditemukan di jawaban siswa tapi TIDAK di referensi,
@@ -79,21 +81,10 @@ def _compute_similarity(
     processed_ref: str,
     use_synonyms: bool = True
 ) -> float:
-    """
-    Menghitung kemiripan semantik antara dua teks yang sudah di-preprocess.
-
-    Menggunakan:
-    - Canonical Token Alignment (opsional via use_synonyms): menyelaraskan token
-      sinonim pada jawaban siswa ke token kanonik pada kunci jawaban referensi
-    - TF-IDF dengan N-gram (1,2): bigram menangkap konteks negasi
-      (contoh: "tidak naik" menjadi token tersendiri, berbeda dari "naik")
-    - Cosine Similarity di ruang TF-IDF (lebih stabil dari SVD untuk 2 dokumen pendek)
-    - Negation Penalty: aturan eksplisit untuk memotong skor jika ada asimetri negasi
-    """
     # 1. Hitung negation penalty terlebih dahulu (sebelum vektorisasi)
     neg_factor = _negation_penalty_factor(processed_student, processed_ref)
 
-    # 1b. Penyelarasan token kanonik berbasis synset untuk mengatasi Vocabulary Mismatch
+    # 1b. Penyelarasan token kanonik berbasis synset
     aligned_student = (
         align_tokens_for_lsa(processed_student, processed_ref)
         if use_synonyms
@@ -113,11 +104,22 @@ def _compute_similarity(
     if n_features == 0:
         return 0.0
 
-    # 3. Cosine Similarity langsung di ruang TF-IDF N-gram
-    # (lebih andal dari SVD saat hanya ada 2 dokumen pendek)
-    sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
-    sim = float(max(0.0, min(1.0, sim)))
+    # 3. LSA SEJATI: Reduksi Dimensi dengan SVD
+    k = max(1, min(tfidf_matrix.shape) - 1)
+    
+    try:
+        # PERBAIKAN: Inisialisasi SVD dan fit_transform hanya DIEKSEKUSI SEKALI di dalam blok warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            svd = TruncatedSVD(n_components=k, random_state=42)
+            latent_matrix = svd.fit_transform(tfidf_matrix)
+        
+        # 4. Cosine Similarity di ruang laten
+        sim = cosine_similarity(latent_matrix[0:1], latent_matrix[1:2])[0][0]
+        sim = float(max(0.0, min(1.0, sim)))
+    except Exception:
+        return 0.0
 
-    # 4. Terapkan negation penalty
+    # 5. Terapkan negation penalty
     final_score = sim * neg_factor * 100
     return final_score

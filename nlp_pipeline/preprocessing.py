@@ -402,7 +402,7 @@ def detect_language(text: str) -> str:
         return 'id'
 
     # Fallback jika skor indikator seimbang: cek leksikon ID (nlp-id) vs EN (WordNet / spaCy vocab)
-    id_count = sum(1 for w in unique_words if w in _id_lemmatizer.lemma_dict or w in _id_lemmatizer.root_word)
+    id_count = sum(1 for w in unique_words if w in _id_lemmatizer.root_word or w in _id_lemmatizer.lemma_dict)
     try:
         from nltk.corpus import wordnet
         en_count = sum(1 for w in unique_words if wordnet.synsets(w))
@@ -607,12 +607,13 @@ def _preprocess_text_cached(
     # 4. Hapus tanda baca & saring angka sisa
     if remove_punctuation:
         text = strip_punctuation(text)
+    
+    # filter_numbers harus selalu dipanggil jika preserve_years=False, 
+    # meskipun remove_punctuation=False (misal pada mode 'exact').
+    if not preserve_years or remove_punctuation:
         text = filter_numbers(text, preserve_years=preserve_years)
-    elif not preserve_years:
-        # Jika remove_punctuation=False namun preserve_years=False, tetap biarkan angka utuh
-        pass
 
-    # 6. Tokenisasi & Stopword removal
+    # 5. Tokenisasi & Stopword removal
     tokens = text.split()
     if remove_stopwords:
         tokens = [
@@ -626,7 +627,7 @@ def _preprocess_text_cached(
             )
         ]
 
-    # 7. Normalisasi (Lemmatisasi bilingual sadar-bahasa)
+    # 6. Normalisasi (Lemmatisasi bilingual sadar-bahasa)
     if use_lemmatization:
         tokens = [_normalize_word(token, lang=detected_lang) for token in tokens]
 

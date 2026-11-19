@@ -53,32 +53,34 @@ def grade_essay(request: EssayRequest) -> GraderResponse:
             keywords=request.keywords,
         )
 
-    # 3. Hitung Skor Faktual (Srb) gabungan dari Keyword dan Math
+        # 3. Hitung Skor Faktual (Srb) gabungan dari Keyword dan Math
     factual_weight = request.rule_weight + request.math_weight
     if factual_weight > 0:
         factual_score = ((rule_score * request.rule_weight) + (math_score * request.math_weight)) / factual_weight
     else:
         factual_score = 0.0
 
-    # 4. Hybrid Fusion dengan Tgate dan Penalti (LSA baru dipanggil jika lolos Tgate)
+    # 4. Hybrid Fusion dengan Tgate (Tanpa Penalti)
     lsa_score = 0.0
-    if factual_score >= request.tgate or request.tgate == 0:
-        # Lulus Tgate: LSA AKTIF (Hitung sekarang dengan flags)
+    
+    # PERBAIKAN LOGIKA: 
+    # LSA HANYA aktif jika factual_score > 0 (tidak mungkin LSA menilai jika siswa salah total / 0)
+    # DAN jika Tgate dimatikan (tgate == 0) ATAU factual_score memenuhi ambang batas.
+    if (factual_score > 0) and (request.tgate == 0 or factual_score >= request.tgate):
+        # Lulus Tgate: LSA AKTIF
         lsa_score = calculate_lsa_score(
             clean_student_answer,
             clean_reference_answers,
             flags=inner_flags
         )
-
-        
-        # Agregasi berbobot penuh (S_final = α × Srb + β × Slsa)
+        # Agregasi berbobot penuh
         final_score = (rule_score * request.rule_weight) + (lsa_score * request.lsa_weight) + (math_score * request.math_weight)
     else:
-        # Gagal Tgate: Penalti = Srb × (Srb / Tgate). LSA TIDAK DIJALANKAN SAMA SEKALI.
-        penalty_score = factual_score * (factual_score / request.tgate)
-        final_score = penalty_score * factual_weight
+        # Gagal Tgate (atau skor faktual 0): LSA TIDAK DIJALANKAN.
+        # Sesuai Rumus 2.4: Skor final = S_fac x W_fac (dimana W_fac adalah gabungan rule & math)
+        final_score = (rule_score * request.rule_weight) + (math_score * request.math_weight)
     
-    # 5. Normalisasi bobot jika total bobot tidak 1.0 (opsional, tapi disarankan)
+    # 5. Normalisasi bobot jika total bobot tidak 1.0
     total_weights = request.rule_weight + request.lsa_weight + request.math_weight
     if total_weights > 0:
         final_score = final_score / total_weights

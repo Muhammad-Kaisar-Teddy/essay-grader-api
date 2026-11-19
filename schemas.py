@@ -1,5 +1,5 @@
 # pyrefly: ignore [missing-import]
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import List, Optional, Literal, Union
 
 LINGUISTIC_SUBJECT_KEYWORDS = (
@@ -78,6 +78,13 @@ class EssayRequest(BaseModel):
     use_synonyms: Optional[bool] = Field(None, description="Shortcut On/Off ekspansi sinonim otomatis")
     
     max_score: float = Field(100.0, ge=0.0, description="Skor maksimal/poin penuh untuk butir soal ini (default 100.0)")
+    
+    @model_validator(mode="after")
+    def _weights_sum_to_one(self):
+        total = self.rule_weight + self.lsa_weight + self.math_weight
+        if total > 0 and abs(total - 1.0) > 1e-6:
+            raise ValueError(f"Total bobot rule, lsa, dan math harus = 1.0. Saat ini: {total}")
+        return self
 
     def resolve_essay_mode(self) -> Literal["linguistic", "exact", "conceptual"]:
         """

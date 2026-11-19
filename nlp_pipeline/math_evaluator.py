@@ -88,9 +88,9 @@ def _canonicalize_var_symbol(sym: str, expected_symbols: Set[str]) -> str:
     ketika simbol kanonik ('P' atau 'Q') menjadi target evaluasi.
     """
     clean = sym.strip()
-    if clean in {"Pe", "P_e", "pe", "p_e"} and ("P" in expected_symbols or not expected_symbols):
+    if clean in {"Pe", "P_e", "pe", "p_e"} and "P" in expected_symbols:
         return "P"
-    if clean in {"Qe", "Q_e", "qe", "q_e"} and ("Q" in expected_symbols or not expected_symbols):
+    if clean in {"Qe", "Q_e", "qe", "q_e"} and "Q" in expected_symbols:
         return "Q"
     return clean
 
@@ -266,7 +266,7 @@ def _extract_verbal_equations(
         r"(" + _NUM_TOKEN_RE + r")"
         r"(?:\s*(ribu|rb|thousand|juta|jt|million))?"
         r"(?:\s*" + _UNIT_SUFFIXES + r")"
-        r"(?!\s*[\*\+\-\/])",
+        r"(?!\s*[\*\+\-\/A-Za-z])",
         flags=re.IGNORECASE,
     )
 
