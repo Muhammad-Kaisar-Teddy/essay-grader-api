@@ -607,11 +607,10 @@ def _preprocess_text_cached(
     # 4. Hapus tanda baca & saring angka sisa
     if remove_punctuation:
         text = strip_punctuation(text)
-    
-    # filter_numbers harus selalu dipanggil jika preserve_years=False, 
-    # meskipun remove_punctuation=False (misal pada mode 'exact').
-    if not preserve_years or remove_punctuation:
         text = filter_numbers(text, preserve_years=preserve_years)
+    elif not preserve_years:
+        # Jika remove_punctuation=False (misal pada mode 'exact'), tetap biarkan angka utuh
+        pass
 
     # 5. Tokenisasi & Stopword removal
     tokens = text.split()

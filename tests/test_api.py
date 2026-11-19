@@ -1,8 +1,76 @@
 import pytest
-from fastapi.testclient import TestClient
-from main import app
+from pydantic import ValidationError
+from main import (
+    app,
+    read_root,
+    grade_endpoint,
+    grade_batch_endpoint,
+    pos_tag_endpoint,
+    lemmatize_endpoint,
+)
+from schemas import (
+    EssayRequest,
+    BatchEssayRequest,
+    PosTagRequest,
+    LemmatizeRequest,
+)
 
-client = TestClient(app)
+
+class _InProcessResponse:
+    def __init__(self, status_code: int, payload):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _FastInProcessClient:
+    """
+    In-process test client untuk FastAPI yang mengeksekusi validasi Pydantic
+    dan fungsi endpoint main.py secara langsung di memori tanpa membuat
+    Windows loopback TCP socket (socket.socketpair pada anyio/ProactorEventLoop),
+    sehingga eksekusi pytest jauh lebih cepat dan tidak pernah tertahan di sandbox.
+    """
+
+    def __init__(self, fastapi_app):
+        self.app = fastapi_app
+
+    def get(self, path: str) -> _InProcessResponse:
+        if path == "/":
+            return _InProcessResponse(200, read_root())
+        return _InProcessResponse(404, {"detail": "Not Found"})
+
+    def head(self, path: str) -> _InProcessResponse:
+        if path == "/":
+            read_root()
+            return _InProcessResponse(200, None)
+        return _InProcessResponse(404, None)
+
+    def post(self, path: str, json: dict) -> _InProcessResponse:
+        try:
+            if path == "/grade":
+                req = EssayRequest.model_validate(json)
+                res = grade_endpoint(req)
+                return _InProcessResponse(200, res.model_dump(mode="json"))
+            if path == "/grade-batch":
+                req = BatchEssayRequest.model_validate(json)
+                res = grade_batch_endpoint(req)
+                return _InProcessResponse(200, res.model_dump(mode="json"))
+            if path == "/pos-tag":
+                req = PosTagRequest.model_validate(json)
+                res = pos_tag_endpoint(req)
+                return _InProcessResponse(200, res.model_dump(mode="json"))
+            if path == "/lemmatize":
+                req = LemmatizeRequest.model_validate(json)
+                res = lemmatize_endpoint(req)
+                return _InProcessResponse(200, res.model_dump(mode="json"))
+            return _InProcessResponse(404, {"detail": "Not Found"})
+        except ValidationError as exc:
+            return _InProcessResponse(422, {"detail": exc.errors()})
+
+
+client = _FastInProcessClient(app)
 
 def test_read_root():
     response = client.get("/")
@@ -1097,6 +1165,8 @@ def test_math_slash_isolation_and_auto_punctuation_switch():
         reference_answers=["Qd = 10000 - 0.5P"],
         math_steps=steps,
         math_weight=1.0,
+        rule_weight=0.0,
+        lsa_weight=0.0,
         remove_punctuation=True,
     )
     assert math_req_override.get_preprocessing_flags().remove_punctuation is True
@@ -1173,6 +1243,8 @@ def test_subject_and_essay_mode_auto_triggers():
         reference_answers=["Q = 15, P = 30000"],
         math_steps=[MathStepItem(equation="Q = 15", weight=1.0)],
         math_weight=1.0,
+        rule_weight=0.0,
+        lsa_weight=0.0,
     )
     assert req_econ_math.resolve_essay_mode() == "exact"
 
@@ -1311,6 +1383,220 @@ def test_grade_batch_endpoint_and_25_items():
         assert item_res["rule_based_score"] == 100.0
         assert item_res["final_score"] > 70.0
         assert 0.0 < item_res["scaled_score"] <= 4.0
+
+
+# ---------------------------------------------------------------------------
+# Test 41: Batch Grading Grouping by id_soal + Tgate + True Corpus LSA + student_id
+# ---------------------------------------------------------------------------
+def test_grade_batch_grouped_by_id_soal_with_tgate_and_corpus_lsa():
+    """
+    Memastikan /grade-batch:
+    1. Mengelompokkan jawaban siswa berdasarkan id_soal.
+    2. Menjalankan preprocessing -> synonym expand -> rule-based -> cek Tgate.
+    3. Siswa yang gagal Tgate langsung dikembalikan skor faktualnya (lsa_score = 0).
+    4. Siswa yang lolos Tgate dinilai menggunakan LSA Sejati berbasis korpus soal tersebut.
+    5. Mengembalikan nilai terpetakan sesuai student_id dan id_soal serta dinormalisasi ke max_score.
+    """
+    q1_ref = [
+        "Fotosintesis adalah proses tumbuhan hijau membuat makanan berupa glukosa dan oksigen dengan bantuan cahaya matahari."
+    ]
+    q1_keywords = [
+        {"keyword": "tumbuhan", "weight": 1.0},
+        {"keyword": "makanan", "weight": 1.0},
+        {"keyword": "matahari", "weight": 1.0},
+        {"keyword": "oksigen", "weight": 1.0},
+    ]
+
+    q2_ref = [
+        "Inflasi adalah kenaikan harga barang dan jasa secara umum dan terus-menerus dalam suatu periode waktu."
+    ]
+    q2_keywords = [
+        {"keyword": "kenaikan harga", "weight": 2.0},
+        {"keyword": "barang", "weight": 1.0},
+        {"keyword": "terus-menerus", "weight": 1.0},
+    ]
+
+    batch_payload = {
+        "subject": "Ilmu Pengetahuan Alam & Ekonomi",
+        "items": [
+            # Siswa 101 - Soal Q1 (Lolos Tgate=50 karena match 4/4 keyword = 100)
+            {
+                "id": "ans_101_q1",
+                "id_soal": "Q1",
+                "student_id": 101,
+                "student_name": "Andi",
+                "student_answer": "Fotosintesis merupakan proses tanaman hijau memasak makanan dan oksigen menggunakan sinar matahari.",
+                "reference_answers": q1_ref,
+                "keywords": q1_keywords,
+                "rule_weight": 0.5,
+                "lsa_weight": 0.5,
+                "tgate": 50.0,
+                "max_score": 10.0,
+            },
+            # Siswa 102 - Soal Q2 (Lolos Tgate=50 karena match seluruh keyword)
+            {
+                "id": "ans_102_q2",
+                "id_soal": "Q2",
+                "student_id": 102,
+                "student_name": "Budi",
+                "student_answer": "Inflasi yaitu kenaikan harga barang serta jasa yang terjadi secara terus-menerus.",
+                "reference_answers": q2_ref,
+                "keywords": q2_keywords,
+                "rule_weight": 0.5,
+                "lsa_weight": 0.5,
+                "tgate": 50.0,
+                "max_score": 20.0,
+            },
+            # Siswa 102 - Soal Q1 (Lolos Tgate=50 karena match 3/4 keyword = 75 >= 50)
+            {
+                "id": "ans_102_q1",
+                "id_soal": "Q1",
+                "student_id": 102,
+                "student_name": "Budi",
+                "student_answer": "Proses tumbuhan membuat makanan sendiri dengan bantuan cahaya matahari.",
+                "reference_answers": q1_ref,
+                "keywords": q1_keywords,
+                "rule_weight": 0.5,
+                "lsa_weight": 0.5,
+                "tgate": 50.0,
+                "max_score": 10.0,
+            },
+            # Siswa 103 - Soal Q1 (GAGAL Tgate=50 karena hanya match 1/4 keyword = 25 < 50)
+            {
+                "id": "ans_103_q1",
+                "id_soal": "Q1",
+                "student_id": 103,
+                "student_name": "Citra",
+                "student_answer": "Tumbuhan berada di halaman sekolah.",
+                "reference_answers": q1_ref,
+                "keywords": q1_keywords,
+                "rule_weight": 0.5,
+                "lsa_weight": 0.5,
+                "tgate": 50.0,
+                "max_score": 10.0,
+            },
+        ],
+    }
+
+    res = client.post("/grade-batch", json=batch_payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total_items"] == 4
+    results = data["results"]
+
+    # 1. Cek Siswa 101 - Q1 (Lolos Tgate, LSA aktif)
+    r_101_q1 = results[0]
+    assert r_101_q1["id"] == "ans_101_q1"
+    assert r_101_q1["id_soal"] == "Q1"
+    assert r_101_q1["student_id"] == 101
+    assert r_101_q1["student_name"] == "Andi"
+    assert r_101_q1["rule_based_score"] == 100.0
+    assert r_101_q1["lsa_score"] > 0.0
+    assert r_101_q1["scaled_score"] == pytest.approx((r_101_q1["final_score"] / 100.0) * 10.0, abs=0.05)
+
+    # 2. Cek Siswa 102 - Q2 (Lolos Tgate, max_score = 20.0)
+    r_102_q2 = results[1]
+    assert r_102_q2["id_soal"] == "Q2"
+    assert r_102_q2["student_id"] == 102
+    assert r_102_q2["rule_based_score"] == 100.0
+    assert r_102_q2["lsa_score"] > 0.0
+    assert r_102_q2["scaled_score"] == pytest.approx((r_102_q2["final_score"] / 100.0) * 20.0, abs=0.05)
+
+    # 3. Cek Siswa 102 - Q1 (Lolos Tgate, satu korpus dengan Siswa 101 di Q1)
+    r_102_q1 = results[2]
+    assert r_102_q1["id_soal"] == "Q1"
+    assert r_102_q1["student_id"] == 102
+    assert r_102_q1["rule_based_score"] == 75.0
+    assert r_102_q1["lsa_score"] > 0.0
+
+    # 4. Cek Siswa 103 - Q1 (Gagal Tgate -> LSA = 0.0, final_score = skor faktual * rule_weight)
+    r_103_q1 = results[3]
+    assert r_103_q1["id_soal"] == "Q1"
+    assert r_103_q1["student_id"] == 103
+    assert r_103_q1["rule_based_score"] == 25.0
+    assert r_103_q1["lsa_score"] == 0.0
+    assert r_103_q1["final_score"] == pytest.approx(12.5, abs=0.05)
+    assert r_103_q1["scaled_score"] == pytest.approx(1.25, abs=0.05)
+
+
+# ---------------------------------------------------------------------------
+# Test 42: Batch Grading Format Terstruktur (questions + answers)
+# ---------------------------------------------------------------------------
+def test_grade_batch_structured_questions_and_answers():
+    """
+    Memastikan Sistem Informasi Asesmen juga dapat mengirimkan daftar `questions`
+    (kunci jawaban, kata kunci, bobot, tgate, max_score per id_soal) dan daftar
+    `answers` seluruh siswa tanpa harus menduplikasi kunci jawaban di setiap item siswa.
+    """
+    payload = {
+        "subject": "Sejarah Indonesia",
+        "questions": [
+            {
+                "id_soal": 501,
+                "reference_answers": [
+                    "Proklamasi kemerdekaan Indonesia dibacakan oleh Soekarno dan Mohammad Hatta pada 17 Agustus 1945 di Jakarta."
+                ],
+                "keywords": [
+                    {"keyword": "Soekarno", "weight": 1.0},
+                    {"keyword": "17 Agustus 1945", "weight": 1.0},
+                    {"keyword": "kemerdekaan", "weight": 1.0},
+                ],
+                "rule_weight": 0.5,
+                "lsa_weight": 0.5,
+                "tgate": 50.0,
+                "max_score": 5.0,
+            }
+        ],
+        "answers": [
+            {
+                "id": 9001,
+                "student_id": "S01",
+                "student_name": "Dewi",
+                "id_soal": 501,
+                "student_answer": "Soekarno membacakan proklamasi kemerdekaan Indonesia pada tanggal 17 Agustus 1945.",
+            },
+            {
+                "id": 9002,
+                "student_id": "S02",
+                "student_name": "Eko",
+                "id_soal": 501,
+                "student_answer": "Kemerdekaan bangsa Indonesia diproklamasikan oleh Soekarno pada 17 Agustus 1945 di Jakarta.",
+            },
+            {
+                "id": 9003,
+                "student_id": "S03",
+                "student_name": "Fajar",
+                "id_soal": 501,
+                "student_answer": "Saya tidak tahu jawabannya.",
+            },
+        ],
+    }
+
+    res = client.post("/grade-batch", json=payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total_items"] == 3
+    r1, r2, r3 = data["results"]
+
+    assert r1["student_id"] == "S01"
+    assert r1["id_soal"] == 501
+    assert r1["rule_based_score"] == 100.0
+    assert r1["lsa_score"] > 0.0
+    assert 0.0 < r1["scaled_score"] <= 5.0
+
+    assert r2["student_id"] == "S02"
+    assert r2["id_soal"] == 501
+    assert r2["rule_based_score"] == 100.0
+    assert r2["lsa_score"] > 0.0
+
+    # S03 gagal Tgate (skor faktual 0)
+    assert r3["student_id"] == "S03"
+    assert r3["id_soal"] == 501
+    assert r3["rule_based_score"] == 0.0
+    assert r3["lsa_score"] == 0.0
+    assert r3["final_score"] == 0.0
+    assert r3["scaled_score"] == 0.0
+
 
 
 

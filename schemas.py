@@ -164,7 +164,94 @@ class GraderResponse(BaseModel):
 class BatchEssayItem(EssayRequest):
     id: Optional[Union[str, int]] = Field(
         None,
-        description="ID unik butir soal/jawaban (misal id_detail dari CBT) untuk pemetaan hasil batch"
+        description="ID unik butir soal/jawaban (misal id_detail atau id_jawaban dari CBT) untuk pemetaan hasil batch"
+    )
+    id_soal: Optional[Union[str, int]] = Field(
+        None,
+        description="ID butir soal untuk pengelompokan jawaban seluruh siswa ke dalam satu korpus LSA per soal"
+    )
+    student_id: Optional[Union[str, int]] = Field(
+        None,
+        description="ID unik siswa (id_siswa) pemilik jawaban"
+    )
+    student_name: Optional[str] = Field(
+        None,
+        description="Nama siswa pemilik jawaban (opsional)"
+    )
+
+
+class StudentAnswerInput(BaseModel):
+    id: Optional[Union[str, int]] = Field(
+        None,
+        description="ID unik baris jawaban di database (misal id_jawaban / id_detail)"
+    )
+    student_id: Optional[Union[str, int]] = Field(
+        None,
+        description="ID unik siswa (id_siswa)"
+    )
+    student_name: Optional[str] = Field(
+        None,
+        description="Nama lengkap siswa (opsional)"
+    )
+    id_soal: Optional[Union[str, int]] = Field(
+        None,
+        description="ID butir soal yang dijawab oleh siswa"
+    )
+    student_answer: str = Field(
+        ...,
+        description="Teks jawaban esai dari siswa"
+    )
+
+
+class QuestionConfigInput(BaseModel):
+    id_soal: Union[str, int] = Field(
+        ...,
+        description="ID unik butir soal (id_soal / id_detail)"
+    )
+    subject: Optional[str] = Field(
+        None,
+        description="Nama mata pelajaran"
+    )
+    essay_mode: Optional[Literal["linguistic", "exact", "conceptual"]] = Field(
+        None,
+        description="Mode esai eksplisit ('linguistic', 'exact', atau 'conceptual')"
+    )
+    reference_answers: List[str] = Field(
+        ...,
+        min_length=1,
+        description="Daftar kunci jawaban dari guru"
+    )
+    keywords: List[KeywordItem] = Field(
+        default_factory=list,
+        description="Daftar kata kunci beserta bobot dinamisnya"
+    )
+    required_keywords_count: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Jumlah target minimal kata kunci untuk nilai 100% pada rule-based"
+    )
+    math_steps: List[MathStepItem] = Field(
+        default_factory=list,
+        description="Daftar ekspektasi langkah persamaan matematis"
+    )
+    rule_weight: float = Field(0.5, ge=0.0, le=1.0, description="Bobot Rule-Based (0.0 - 1.0)")
+    lsa_weight: float = Field(0.5, ge=0.0, le=1.0, description="Bobot LSA (0.0 - 1.0)")
+    math_weight: float = Field(0.0, ge=0.0, le=1.0, description="Bobot Evaluasi Matematis (0.0 - 1.0)")
+    tgate: float = Field(0.0, ge=0.0, le=100.0, description="Threshold Gate (0-100) untuk minimal skor faktual")
+    max_score: float = Field(100.0, ge=0.0, description="Skor maksimal/poin penuh untuk butir soal ini")
+    preprocessing_flags: Optional[PreprocessingFlags] = Field(default=None)
+    clean_html: Optional[bool] = Field(None)
+    case_folding: Optional[bool] = Field(None)
+    expand_contractions: Optional[bool] = Field(None)
+    convert_numbers: Optional[bool] = Field(None)
+    remove_punctuation: Optional[bool] = Field(None)
+    preserve_years: Optional[bool] = Field(None)
+    remove_stopwords: Optional[bool] = Field(None)
+    use_lemmatization: Optional[bool] = Field(None)
+    use_synonyms: Optional[bool] = Field(None)
+    students: Optional[List[StudentAnswerInput]] = Field(
+        default=None,
+        description="Opsional: Daftar jawaban seluruh siswa untuk butir soal ini"
     )
 
 
@@ -172,6 +259,18 @@ class BatchGraderResultItem(GraderResponse):
     id: Optional[Union[str, int]] = Field(
         None,
         description="ID unik butir soal/jawaban yang sesuai dengan item pada request batch"
+    )
+    id_soal: Optional[Union[str, int]] = Field(
+        None,
+        description="ID unik butir soal yang dinilai"
+    )
+    student_id: Optional[Union[str, int]] = Field(
+        None,
+        description="ID unik siswa yang dinilai"
+    )
+    student_name: Optional[str] = Field(
+        None,
+        description="Nama siswa yang dinilai (jika dikirim pada request)"
     )
 
 
@@ -184,11 +283,99 @@ class BatchEssayRequest(BaseModel):
         None,
         description="Default mode esai untuk seluruh item dalam batch jika item tidak menyertakan essay_mode tersendiri"
     )
-    items: List[BatchEssayItem] = Field(
-        ...,
-        min_length=1,
-        description="Daftar jawaban esai siswa yang akan dinilai sekaligus dalam satu panggilan HTTP"
+    items: Optional[List[BatchEssayItem]] = Field(
+        default=None,
+        description="Daftar jawaban esai siswa (format flat) yang akan dikelompokkan berdasarkan id_soal dan dinilai sekaligus"
     )
+    questions: Optional[List[QuestionConfigInput]] = Field(
+        default=None,
+        description="Daftar data soal (kunci jawaban, kata kunci, bobot, tgate, max_score) yang dipetakan berdasarkan id_soal"
+    )
+    answers: Optional[List[StudentAnswerInput]] = Field(
+        default=None,
+        description="Daftar seluruh jawaban siswa (student_id, student_name, id_soal, student_answer) untuk dipasangkan dengan questions"
+    )
+
+    @model_validator(mode="after")
+    def _validate_batch_payload(self):
+        has_items = bool(self.items)
+        has_questions = bool(self.questions)
+        if not has_items and not has_questions:
+            raise ValueError("BatchEssayRequest harus berisi minimal 'items' atau 'questions'.")
+        return self
+
+    def to_normalized_items(self) -> List[BatchEssayItem]:
+        """
+        Menormalisasi berbagai bentuk payload batch (flat `items`, `questions` + `answers`,
+        maupun `questions` dengan nested `students`) menjadi daftar `BatchEssayItem` yang seragam.
+        """
+        normalized: List[BatchEssayItem] = []
+
+        # 1. Jika dikirim dalam bentuk flat items
+        if self.items:
+            for item in self.items:
+                updates = {}
+                if item.subject is None and self.subject is not None:
+                    updates["subject"] = self.subject
+                if item.essay_mode is None and self.essay_mode is not None:
+                    updates["essay_mode"] = self.essay_mode
+                normalized.append(item.model_copy(update=updates) if updates else item)
+
+        # 2. Jika dikirim dalam bentuk terstruktur (questions + answers / nested students)
+        if self.questions:
+            question_map = {str(q.id_soal): q for q in self.questions}
+
+            # 2a. Nested students di dalam masing-masing question
+            for q in self.questions:
+                if q.students:
+                    q_data = q.model_dump(exclude={"students", "id_soal"})
+                    if q_data.get("subject") is None and self.subject is not None:
+                        q_data["subject"] = self.subject
+                    if q_data.get("essay_mode") is None and self.essay_mode is not None:
+                        q_data["essay_mode"] = self.essay_mode
+
+                    for stu in q.students:
+                        normalized.append(
+                            BatchEssayItem(
+                                id=stu.id,
+                                id_soal=q.id_soal,
+                                student_id=stu.student_id,
+                                student_name=stu.student_name,
+                                student_answer=stu.student_answer,
+                                **q_data,
+                            )
+                        )
+
+            # 2b. Daftar answers terpisah di level root yang merujuk ke id_soal
+            if self.answers:
+                for ans in self.answers:
+                    if ans.id_soal is None or str(ans.id_soal) not in question_map:
+                        raise ValueError(
+                            f"Jawaban siswa (student_id={ans.student_id}) merujuk ke id_soal='{ans.id_soal}' "
+                            f"yang tidak ditemukan pada daftar questions."
+                        )
+                    q = question_map[str(ans.id_soal)]
+                    q_data = q.model_dump(exclude={"students", "id_soal"})
+                    if q_data.get("subject") is None and self.subject is not None:
+                        q_data["subject"] = self.subject
+                    if q_data.get("essay_mode") is None and self.essay_mode is not None:
+                        q_data["essay_mode"] = self.essay_mode
+
+                    normalized.append(
+                        BatchEssayItem(
+                            id=ans.id,
+                            id_soal=q.id_soal,
+                            student_id=ans.student_id,
+                            student_name=ans.student_name,
+                            student_answer=ans.student_answer,
+                            **q_data,
+                        )
+                    )
+
+        if not normalized:
+            raise ValueError("Tidak ada item jawaban siswa yang ditemukan untuk dinilai.")
+
+        return normalized
 
 
 class BatchGraderResponse(BaseModel):

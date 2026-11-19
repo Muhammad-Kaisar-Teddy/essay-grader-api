@@ -266,7 +266,7 @@ def _extract_verbal_equations(
         r"(" + _NUM_TOKEN_RE + r")"
         r"(?:\s*(ribu|rb|thousand|juta|jt|million))?"
         r"(?:\s*" + _UNIT_SUFFIXES + r")"
-        r"(?!\s*[\*\+\-\/A-Za-z])",
+        r"(?!\s*[\*\+\-\/]|[A-Za-z])",
         flags=re.IGNORECASE,
     )
 
