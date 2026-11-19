@@ -32,7 +32,12 @@ def calculate_lsa_score(
     if not processed_student:
         return 0.0
 
-    use_synonyms = getattr(flags, "use_synonyms", True) if flags is not None else True
+    if flags is None:
+        use_synonyms = False
+    elif isinstance(flags, dict):
+        use_synonyms = bool(flags.get("use_synonyms", False))
+    else:
+        use_synonyms = bool(getattr(flags, "use_synonyms", False))
 
     best_score = 0.0
     for ref in reference_answers:
@@ -79,7 +84,7 @@ def _negation_penalty_factor(processed_student: str, processed_ref: str) -> floa
 def _compute_similarity(
     processed_student: str,
     processed_ref: str,
-    use_synonyms: bool = True
+    use_synonyms: bool = False
 ) -> float:
     # 1. Hitung negation penalty terlebih dahulu (sebelum vektorisasi)
     neg_factor = _negation_penalty_factor(processed_student, processed_ref)
@@ -159,7 +164,12 @@ def calculate_batch_lsa_scores(
     if not valid_students or not valid_refs:
         return [0.0] * len(student_answers)
 
-    use_synonyms = getattr(flags, "use_synonyms", True) if flags is not None else True
+    if flags is None:
+        use_synonyms = False
+    elif isinstance(flags, dict):
+        use_synonyms = bool(flags.get("use_synonyms", False))
+    else:
+        use_synonyms = bool(getattr(flags, "use_synonyms", False))
 
     # 2. Global Synonym Alignment (Siswa ke Referensi)
     if use_synonyms:

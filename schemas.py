@@ -32,7 +32,7 @@ class PreprocessingFlags(BaseModel):
     preserve_years: bool = Field(True, description="Pertahankan angka tahun 4 digit rentang 1000 - 2099")
     remove_stopwords: bool = Field(True, description="Hapus kata henti (stopwords)")
     use_lemmatization: bool = Field(True, description="Lemmatisasi bilingual (nlp-id untuk ID, spaCy untuk EN)")
-    use_synonyms: bool = Field(True, description="Ekspansi sinonim otomatis (WordNet/Tesaurus) pada Rule-Based dan penyelarasan kanonik pada LSA")
+    use_synonyms: bool = Field(False, description="Ekspansi sinonim otomatis (WordNet/Tesaurus) pada Rule-Based dan penyelarasan kanonik pada LSA (default False: Rule-Based Murni & LSA Murni)")
 
 
 class EssayRequest(BaseModel):
@@ -138,7 +138,7 @@ class EssayRequest(BaseModel):
                 data["preserve_years"] = True
                 data["remove_stopwords"] = True
                 data["use_lemmatization"] = True
-                data["use_synonyms"] = True
+                data["use_synonyms"] = False
 
         for field in [
             "clean_html", "case_folding", "expand_contractions", "convert_numbers",

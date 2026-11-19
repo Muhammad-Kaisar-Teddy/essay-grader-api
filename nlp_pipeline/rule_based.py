@@ -104,7 +104,12 @@ def calculate_rule_based_score(
         student_answer_raw, convert_numbers=convert_numbers, flags=flags
     )
     strict_answer = _prepare_strict_answer(student_answer_raw, flags=flags)
-    use_synonyms = getattr(flags, "use_synonyms", True) if flags is not None else True
+    if flags is None:
+        use_synonyms = False
+    elif isinstance(flags, dict):
+        use_synonyms = bool(flags.get("use_synonyms", False))
+    else:
+        use_synonyms = bool(getattr(flags, "use_synonyms", False))
     total_weight = sum(kw.weight for kw in keywords)
 
     if total_weight == 0:

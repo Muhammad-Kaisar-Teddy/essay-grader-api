@@ -774,12 +774,17 @@ def test_synonym_expansion_rule_based():
         "lsa_weight": 0.3,
     }
 
-    # 1. Default (use_synonyms=True): kedua keyword harus cocok via ekspansi sinonim otomatis
-    res_syn_on = client.post("/grade", json=payload).json()
+    # 1. Default (use_synonyms=False / Rule-Based Murni): tidak mencocokkan sinonim yang tidak ditulis eksplisit
+    res_syn_default = client.post("/grade", json=payload).json()
+    assert res_syn_default["rule_based_score"] == 0.0
+    assert len(res_syn_default["matched_keywords"]) == 0
+
+    # 2. Jika use_synonyms=True: kedua keyword harus cocok via ekspansi sinonim otomatis
+    res_syn_on = client.post("/grade", json={**payload, "use_synonyms": True}).json()
     assert res_syn_on["rule_based_score"] == 100.0
     assert len(res_syn_on["matched_keywords"]) == 2
 
-    # 2. Jika use_synonyms=False: tidak boleh mencocokkan sinonim yang tidak ditulis eksplisit
+    # 3. Jika use_synonyms=False eksplisit: tetap 0.0
     res_syn_off = client.post("/grade", json={**payload, "use_synonyms": False}).json()
     assert res_syn_off["rule_based_score"] == 0.0
     assert len(res_syn_off["matched_keywords"]) == 0
@@ -789,7 +794,7 @@ def test_synonym_expansion_rule_based():
 # Test 25: Keamanan Strict Mode (**) dan Polysemy Guard pada Ekspansi Sinonim
 # ---------------------------------------------------------------------------
 def test_synonym_expansion_strict_and_polysemy_guard():
-    # Keyword strict=True TIDAK BOLEH diekspansi ke sinonim
+    # Keyword strict=True TIDAK BOLEH diekspansi ke sinonim meskipun use_synonyms=True
     payload_strict = {
         "student_answer": "Gaya hidup boros harus dihindari.",
         "reference_answers": ["Gaya hidup konsumtif harus dihindari."],
@@ -798,6 +803,7 @@ def test_synonym_expansion_strict_and_polysemy_guard():
         ],
         "rule_weight": 1.0,
         "lsa_weight": 0.0,
+        "use_synonyms": True,
     }
     res_strict = client.post("/grade", json=payload_strict).json()
     assert res_strict["rule_based_score"] == 0.0
@@ -844,6 +850,7 @@ def test_lsa_synonym_alignment_preserves_negation_penalty():
         "keywords": [],
         "rule_weight": 0.0,
         "lsa_weight": 1.0,
+        "use_synonyms": True,
     }).json()
 
     # Siswa B: kalimat negasi menggunakan sinonim ("tidak mengotori", "tidak menghancurkan")
@@ -853,6 +860,7 @@ def test_lsa_synonym_alignment_preserves_negation_penalty():
         "keywords": [],
         "rule_weight": 0.0,
         "lsa_weight": 1.0,
+        "use_synonyms": True,
     }).json()
 
     # Skor kalimat bernegasi harus tetap dipotong oleh negation penalty
@@ -1198,7 +1206,7 @@ def test_subject_and_essay_mode_auto_triggers():
     assert req_bindo.resolve_essay_mode() == "linguistic"
     flags_bindo = req_bindo.get_preprocessing_flags()
     assert flags_bindo.use_lemmatization is True
-    assert flags_bindo.use_synonyms is True
+    assert flags_bindo.use_synonyms is False
     assert flags_bindo.convert_numbers is True
     assert flags_bindo.remove_punctuation is True
 
@@ -1224,7 +1232,7 @@ def test_subject_and_essay_mode_auto_triggers():
     assert req_info.resolve_essay_mode() == "conceptual"
     flags_info = req_info.get_preprocessing_flags()
     assert flags_info.use_lemmatization is True
-    assert flags_info.use_synonyms is True
+    assert flags_info.use_synonyms is False
     assert flags_info.preserve_years is True
 
     # 4. Smart Hybrid Trigger pada Ekonomi:
@@ -1425,7 +1433,7 @@ def test_grade_batch_grouped_by_id_soal_with_tgate_and_corpus_lsa():
                 "id_soal": "Q1",
                 "student_id": 101,
                 "student_name": "Andi",
-                "student_answer": "Fotosintesis merupakan proses tanaman hijau memasak makanan dan oksigen menggunakan sinar matahari.",
+                "student_answer": "Fotosintesis merupakan proses tumbuhan hijau memasak makanan dan oksigen menggunakan sinar matahari.",
                 "reference_answers": q1_ref,
                 "keywords": q1_keywords,
                 "rule_weight": 0.5,
